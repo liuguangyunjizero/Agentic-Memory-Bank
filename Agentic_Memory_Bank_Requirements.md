@@ -107,6 +107,14 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 **多模态附件设计**：
 
+多模态内容来源有两种情况：
+
+**情况1：用户上传的图片等内容**
+- 用户上传图片时，【适配器】先将其保存到临时存储
+- 等待外部框架完成识别任务后，再正式创建Interaction Tree节点
+- 节点包含识别结果文本（父节点）和图片附件（子节点）
+
+**情况2：工具返回的多模态内容**
 工具（如web_visit、pdf_reader等）返回两部分内容：
 1. **摘要**：压缩后的文本描述，直接嵌入父节点
 2. **附件**（可选）：重要的原始多模态内容，存储为子节点
@@ -403,7 +411,7 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 #### 3.3.1 【适配器Adapter】
 
-**职责**：作为Agentic Memory Bank与外部框架的接口层，负责上下文的拦截、增强和传递。
+**职责**：作为Agentic Memory Bank与外部框架的接口层，负责上下文的拦截、增强和传递，以及多模态内容的临时管理。
 
 **设计定位**：Agentic Memory Bank提供一种记忆管理范式，外部Agent框架（如ReAct）通过【适配器Adapter】与该系统交互，实现长上下文的结构化管理。
 
@@ -414,7 +422,30 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 - `<memory>...</memory>`：表示Query Graph记忆节点
 - `<tool_call>...</tool_call>` / `<tool_response>...</tool_response>`：表示Deep Retrieval工具调用和响应
 
-**功能1：Prompt增强（初始化 + 每轮循环开始）**
+**功能1：多模态内容临时管理**
+
+当用户上传多模态内容（如图片）时，【适配器】负责临时存储和管理：
+
+临时存储流程：
+1. 用户上传图片时，保存到临时目录（temp文件夹）
+2. 在Adapter内部维护临时存储映射（使用Insight Doc的doc_id作为键）
+3. 存储图片的临时路径和类型信息，但不立即创建Interaction Tree节点
+4. 等待【规划Agent】识别到有待处理的多模态内容并规划识别任务
+
+识别完成后处理：
+1. 外部框架执行图片识别任务并返回结果
+2. 【适配器】从临时存储中提取图片信息
+3. 将图片从临时目录移动到正式存储目录
+4. 随识别结果一起创建完整的Interaction Tree节点（包含文本描述和图片附件）
+5. 清理临时存储映射
+
+设计理由：
+- 避免在识别前创建不完整的记忆节点
+- 保证数据完整性（文本描述和附件同时保存）
+- 不污染持久化数据（临时状态不会被序列化）
+- 完全走正常的记忆创建流程
+
+**功能2：Prompt增强（初始化 + 每轮循环开始）**
 
 增强流程：
 1. 读取Insight Doc（获取当前任务和执行状态）
@@ -422,121 +453,62 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
    - 使用混合检索（`α × Attribute + (1-α) × Embedding`）
    - 返回top-k节点 + 每个节点的一层邻居
    - 按timestamp降序排列
-3. 组装增强Prompt：
+3. 检查是否有临时存储的多模态内容：
+   - 如果有待识别的图片，从临时存储读取并附加到Prompt
+   - 多模态内容以适合外部框架的格式传递（如base64编码的图片）
+4. 组装增强Prompt：
    - 使用`<task>`标记包裹Insight Doc完整内容
    - 使用`<memory>`标记包裹检索到的相关Query Graph记忆（summary + context + keywords）
-4. 传递给外部框架
+   - 如有多模态内容，以相应格式附加
+5. 传递给外部框架
 
-**功能2：上下文拦截（每轮循环结束）**
+**功能3：上下文拦截（每轮循环结束）**
 
 拦截流程：
 1. 外部框架完成当前任务，输出停止token
 2. 【适配器】拦截任务执行的上下文
 3. 判断任务类型：
    - 如果是Cross Validation任务：直接传给【记忆整合Agent】处理冲突
+   - 如果是图片识别任务：从临时存储提取图片，移至正式目录，随识别结果一起创建记忆节点，清理临时存储
    - 如果是普通任务：传给【分类/聚类Agent】开始记忆更新流程
 
 **错误处理**：
 - Agent调用失败时，记录错误日志并尝试重试一次
 - 如果连续失败，标记当前任务为失败状态并继续执行
+- 临时存储的多模态文件在任务终止时自动清理
 
 #### 3.3.2 【深入检索Deep Retrieval工具】
 
-**职责**：供外部框架调用，读取特定Query Graph记忆的Interaction Tree完整内容。
+**职责**：供外部框架调用，读取特定Query Graph记忆的Interaction Tree完整内容，包括所有Entry的文本和附件的实际内容。
 
 **工具声明**：在ReAct框架初始化时声明该工具，作为标准工具集的一部分，供整个执行过程使用。
 
-**调用模式**：采用两阶段调用设计
-
-**第一阶段：获取完整文本和附件概览**
-
 **输入**：
 - Query Graph节点id
 
 **输出**：
-- 所有Interaction Tree Entry的完整文本（text字段）
-- 每个Entry的附件列表（包含attachment id、type、content路径，但不包含文件实际内容）
-- 按timestamp排序
-
-**第二阶段：获取特定附件内容（可选）**
-
-**输入**：
-- Query Graph节点id
-- Interaction Tree附件id（从第一阶段的返回结果中获取）
-
-**输出**：
-- 指定附件的文件路径
-- 指定附件的文件实际内容（根据type类型处理：图片返回base64编码，文档返回解析后的文本或base64，代码返回原始文本）
+- 所有Interaction Tree Entry的完整信息，按timestamp排序，每个Entry包含：
+  - entry_id：Entry的唯一标识符
+  - text：完整的文本内容
+  - timestamp：创建时间
+  - metadata：元数据信息（包括source、tool_calls等）
+  - attachments：附件列表，每个附件包含：
+    - id：附件唯一标识符
+    - type：附件类型（image、document、code等）
+    - content：文件路径
+    - file_content：文件的实际内容（根据type类型处理：图片返回base64编码，文档返回解析后的文本或base64，代码返回原始文本）
 
 **使用场景**：
-- 外部框架发现Query Graph的summary不够详细
-- 需要查看原始推理过程（第一阶段调用即可）
-- 需要访问图片、PDF等多模态附件的实际内容（需要第二阶段调用）
+- 外部框架发现Query Graph的summary不够详细，需要查看原始推理过程
+- 需要访问图片、PDF等多模态附件的完整内容
+- 需要了解详细的工具调用历史和执行过程
 
 **设计理由**：
-- 第一阶段返回附件概览，让外部框架知道有哪些附件可用
-- 第二阶段按需获取，避免不必要的大文件传输
-- 大部分情况下，Entry的text已足够详细，无需查看附件
+- 一次性返回所有信息，简化调用流程
+- Entry的text已经包含摘要，附件内容按需使用
+- 外部框架可自主决定是否使用附件内容
 
 **调用格式**：使用ReAct标准的`<tool_call>`/`<tool_response>`标记
-
-**示例**：
-
-第一阶段调用：
-```json
-{
-  "tool": "deep_retrieval",
-  "parameters": {
-    "query_node_id": "node-1"
-  }
-}
-```
-
-返回：
-```json
-{
-  "entries": [
-    {
-      "entry_id": "entry-1",
-      "text": "搜索了IBM量子芯片的技术规格...",
-      "timestamp": "2024-01-10T10:00:00Z",
-      "attachments": [
-        {
-          "id": "att-1",
-          "type": "document",
-          "content": "papers/ibm_quantum.pdf"
-        },
-        {
-          "id": "att-2",
-          "type": "image",
-          "content": "diagrams/quantum_chip.png"
-        }
-      ]
-    }
-  ]
-}
-```
-
-第二阶段调用（可选）：
-```json
-{
-  "tool": "deep_retrieval",
-  "parameters": {
-    "query_node_id": "node-1",
-    "attachment_id": "att-2"
-  }
-}
-```
-
-返回：
-```json
-{
-  "attachment_id": "att-2",
-  "type": "image",
-  "content": "diagrams/quantum_chip.png",
-  "file_content": "data:image/png;base64,iVBORw0KGgoAAAANS..."
-}
-```
 
 ---
 
@@ -544,13 +516,17 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 ### 4.1 初始化阶段
 
-1. **用户输入**：Prompt（包含上下文+问题，上下文可能为空）
+1. **用户输入**：Prompt（包含上下文+问题，上下文可能为空，可能包含多模态内容如图片）
 
-2. **【适配器Adapter】拦截**：捕获用户输入
+2. **【适配器Adapter】拦截**：
+   - 捕获用户输入
+   - 如果用户上传了图片等多模态内容：
+     - 保存到临时目录
+     - 在Adapter内部维护临时存储映射（等待后续识别任务完成后再正式创建记忆节点）
 
-3. **判断是否有上下文需要处理**：
-   - 如果有上下文 → 进入步骤4
-   - 如果无上下文（仅问题）→ 跳到步骤10
+3. **判断是否有文本上下文需要处理**：
+   - 如果有文本上下文 → 进入步骤4
+   - 如果无文本上下文（仅问题/仅图片）→ 跳到步骤10
 
 4. **【分类/聚类Agent】分类**：
    - 对上下文进行主题分类
@@ -588,15 +564,17 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 10. **【计划Agent】分析任务**：
     - 输入：任务总目标 + 新生成的Query Graph节点（summary、context、keywords）或conflict通知
+    - 如果Adapter有临时存储的多模态内容，Planning Agent可识别到有待处理的图片等内容
     - 输出：更新Insight Doc
       - 任务总目标
       - 已完成子任务（如果有）
-      - 待办任务列表（决定下一步做什么）
+      - 待办任务列表（决定下一步做什么，如规划图片识别任务）
 
 11. **【适配器Adapter】增强Prompt**：
     - 读取Insight Doc
     - 硬编码：调用检索模块，检索当前待办任务相关Query Graph记忆（混合检索，top-k + 一层邻居，按timestamp降序排列）
-    - 组装：使用`<task>`标记包裹Insight Doc + 使用`<memory>`标记包裹相关记忆
+    - 检查是否有临时存储的多模态内容，如有则以适合外部框架的格式附加（如base64编码的图片）
+    - 组装：使用`<task>`标记包裹Insight Doc + 使用`<memory>`标记包裹相关记忆 + 多模态内容
     - 传入外部框架
 
 ### 4.2 执行循环
@@ -628,7 +606,18 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
       - 如果还有conflict，递归处理
       - 直到只剩related关系
 
-    **分支2：普通任务**
+    **分支2：图片识别任务**
+    - 外部框架已完成图片识别，返回识别结果（文本描述）
+    - 【适配器】从临时存储提取图片信息
+    - 将图片从临时目录移动到正式存储目录
+    - 随识别结果一起创建完整的Interaction Tree节点：
+      - 父节点：存储识别结果文本描述
+      - 子节点：存储图片附件（type=image, content=正式文件路径）
+    - 执行步骤4-8：【分类/聚类Agent】→【结构化Agent】→ 硬编码计算embedding → 硬编码检索 → 【记忆分析Agent】
+    - 清理临时存储映射
+    - 更新Query Graph和Interaction Tree
+
+    **分支3：普通任务**
     - 执行步骤4-8：【分类/聚类Agent】→【结构化Agent】→ 硬编码计算embedding → 硬编码检索 → 【记忆分析Agent】（两阶段）→ 硬编码创建Interaction Tree
     - 更新Query Graph和Interaction Tree
 
