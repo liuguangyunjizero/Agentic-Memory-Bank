@@ -34,12 +34,24 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 1. **任务总目标**：用户原始问题或任务描述
 
 2. **已完成的子任务记录**：四元组列表 `[(t_i, d_i, s_i, c_i)]`
-   - `t_i`：任务类型（如"搜索"用于信息检索、"解决"用于推理计算、"回答"用于最终输出）
+   - `t_i`：任务类型，只有两种：`NORMAL`（普通子任务）和`CROSS_VALIDATE`（交叉验证任务）
    - `d_i`：任务详细描述，指导节点的执行目标
    - `s_i`：执行状态，通常为"成功"或"失败"
    - `c_i`：成功执行后的知识上下文（1-2句话的浓缩总结，包括检索到的信息或推理得出的见解）
 
 3. **待办任务列表**：动态调整的任务列表，采用增量式规划策略，每次仅决定下一步要做什么
+
+**任务类型说明**：
+- `NORMAL`：普通子任务，由Planning Agent根据当前进度规划的常规任务
+- `CROSS_VALIDATE`：交叉验证任务，当Memory Analysis Agent检测到冲突信息时，Planning Agent会规划此类任务以解决矛盾
+
+**增量规划理念**：
+本系统采用"单步规划"模式，Planning Agent每次只决定**下一步**要执行的任务，而非一次性规划所有步骤。这种设计具有以下优势：
+- 动态适应：根据每步执行结果灵活调整后续计划
+- 降低复杂度：无需维护优先级队列或复杂的任务排序机制
+- 冲突响应及时：检测到矛盾信息时，直接将Cross Validation任务作为下一步
+
+因此，`pending_tasks`列表在大多数时刻只包含0-1个任务
 
 #### 2.1.2 Query Graph（语义记忆图）
 
@@ -61,30 +73,32 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 节点之间可能存在特殊的**关系状态**：
 - **conflict状态**：两个节点的内容互相矛盾，会触发Cross Validation流程
-- **merge状态**：两个节点描述相同或高度重叠的内容，会触发节点合并操作
 - **related状态**：两个节点在语义/主题/逻辑上有关联，建立related边
 
 这些关系状态不是边的类型，而是通过【记忆分析Agent】判断得出的节点间关系，用于触发相应的后续操作。
 
-**关系判断优先级**：系统采用优先级机制判断节点间的关系：**conflict > merge > related**。每次都确保没有前一个情况再去处理下一种，具体流程如下：
+**关系判断优先级**：系统采用优先级机制判断节点间的关系：**conflict > related**。具体流程如下：
 1. **第一步**：优先检查是否存在conflict关系（内容互相矛盾）
-2. **第二步**：如果不存在conflict，再检查是否存在merge关系（内容重叠相同）
-3. **第三步**：如果既不存在conflict也不存在merge，才判断是否为related关系
+2. **第二步**：如果不存在conflict，再判断是否为related关系
 
-检测到conflict或merge关系后，系统会立即执行相应处理，最终这些节点会被合并或验证。
+检测到conflict关系后，系统会立即执行相应处理（触发Cross Validation），节点最终会被验证和合并。
 
 **检索方式**：
 - **Attribute-Based**：通过关键词匹配检索
 - **Embedding-Based**：通过语义向量相似度检索
 - **混合检索**：`Final_Score = α × Attribute-Based + (1-α) × Embedding-Based`（α为可配置参数，详见3.1.2节检索参数配置）
 
+**检索流程**：
+1. **筛选阶段**：使用相似度（或混合分数）筛选出top-k候选节点
+2. **扩展阶段**：为每个候选节点附带一层邻居节点（完整的id, summary, context, keywords和timestamp）
+3. **排序阶段**：将所有节点（候选节点 + 邻居节点）按timestamp降序排列后返回
+
 **检索参数**：
 - `k`：top-k检索的k值（可配置参数，详见3.1.2节检索参数配置）
-- 检索结果附带一层邻居节点（完整的id, summary, context和timestamp）
 
 #### 2.1.3 Interaction Tree（交互历史层）
 
-以只读的树形结构存储细粒度的原始交互数据，支持多模态信息。忠实记录上下文，不进行修改。
+以只读的树形结构存储细粒度的原始交互数据，支持多模态信息。树内既不修改历史内容，也不会重写原始记录。发生 Query Graph 节点合并时，只需将原节点对应的 Interaction Tree 重新挂接到合并后的新节点，并新增一条只读的合并事件元信息，说明是哪些节点在何时合并成当前节点，便于追溯上下文来源。
 
 **结构特点**：
 - 每个Query Graph节点对应一棵或多颗Interaction Tree
@@ -108,6 +122,11 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 - `content`：**文件路径**（存储多模态文件的磁盘路径或云存储URI，而非文件内容本身）
 
 **存储策略**：有选择性地保留相关的、重要的多模态内容，而非全部保留。系统通过文件路径索引访问实际文件，避免在节点属性中存储大量二进制数据或文本内容，提高存储效率和系统性能。
+
+**存储实现**：
+- 所有记忆（Query Graph、Interaction Tree）存储在内存中
+- 可选功能：提供简单的持久化接口，将当前记忆导出为JSON文件
+- 单次任务完成后，所有内存中的记忆将被清理
 
 ---
 
@@ -195,20 +214,13 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 - 长上下文文本（可能超出Agent窗口长度）
 - 可选：当前任务描述（辅助分类决策）
 
-**输出**：
-```json
-{
-  "should_cluster": true,
-  "clusters": [
-    {
-      "cluster_id": 1,
-      "context": "量子计算硬件突破（IBM、Google等）",
-      "content": "...(属于该主题的原始文本)...",
-      "keywords": ["量子比特", "超导芯片", "量子纠错"]
-    }
-  ]
-}
-```
+**输出**：聚类判断结果及聚类列表
+- **聚类判断**：布尔值，指示是否需要进行聚类
+- **聚类列表**（如需聚类）：每个聚类包含以下内容
+  - 聚类ID：唯一标识符
+  - context：简短的主题描述（一句话概括）
+  - content：属于该主题的原始文本内容
+  - keywords：关键词列表
 
 **特殊处理：超长上下文**
 
@@ -230,11 +242,7 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 - cluster的context和keywords（参考）
 
 **输出**：结构化摘要
-```json
-{
-  "summary": "结构化的详细摘要（包含关键信息、证据、逻辑等）"
-}
-```
+- summary：结构化的详细摘要（包含关键信息、证据、逻辑等）
 
 **后续硬编码处理**：
 1. 生成节点id（UUID或递增ID）
@@ -247,99 +255,62 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 #### 3.2.3 【记忆分析Agent】
 
-**职责**：判断新节点与现有节点的关系，采用两次独立LLM调用的两阶段判断策略。
+**职责**：判断新节点与现有节点的关系，尽量通过单次LLM调用完成优先级顺序判定。
 
-**两阶段判断策略说明**：
-- **第一阶段**：进行第一次独立LLM调用，优先判断新节点与候选节点是否存在conflict（内容矛盾）或merge（内容重叠）关系
-- **第二阶段**：仅当第一阶段判断结果为既无conflict也无merge时，进行第二次独立LLM调用，判断是否存在related（内容相关）关系
+**流程说明**：
+- 默认只触发一次LLM调用：针对每个候选节点按"是否存在conflict → 是否属于related"依次判断，命中任一关系后立即返回结果，不再继续后续判断。
 
-这样的设计确保了：(1) 高度矛盾/重叠的关系优先被发现和处理；(2) 两个阶段的判断逻辑相对独立，降低前一阶段判断对后续的影响；(3) 系统资源的合理使用（只在必要时进行第二次调用）。
+顺序化判断既能保证冲突关系的优先处理，也避免不必要的重复调用。
 
 **输入**：
 - 新节点（summary、context、keywords）  ← **不包含embedding**
 - 候选节点列表（summary、context、keywords）  ← **检索模块返回的**
-- 判断类型：`["conflict", "merge"]` 或 `["related"]`
 
-**输出**：关系列表
-```json
-[
-  {
-    "existing_node": "node_B",
-    "relationship": "conflict",
-    "confidence": 0.95,
-    "reasoning": "节点A说CEO是张三，节点B说CEO是李四",
-    "conflict_description": "CEO信息矛盾"
-  },
-  {
-    "existing_node": "node_C",
-    "relationship": "merge",
-    "confidence": 0.90,
-    "reasoning": "节点C包含A的所有信息且有更多细节",
-    "merge_strategy": "保留C的完整信息，补充A的独特视角"
-  },
-  {
-    "existing_node": "node_D",
-    "relationship": "related",
-    "confidence": 0.85,
-    "reasoning": "两个节点都讨论量子计算，但侧重点不同",
-    "context_update_new": "IBM量子芯片技术（属于量子计算硬件突破）",
-    "context_update_existing": "量子计算硬件突破（包含IBM芯片技术）",
-    "keywords_update_new": ["IBM", "量子芯片", "硬件"],
-    "keywords_update_existing": ["量子计算", "硬件突破", "IBM芯片"]
-  }
-]
-```
+**输出**：关系列表，每个关系包含以下字段
+- existing_node：现有节点的ID
+- relationship：关系类型（conflict、related或unrelated）
+- reasoning：判断理由说明
+- **针对conflict关系**：
+  - conflict_description：冲突描述
+- **针对related关系**：
+  - context_update_new：新节点更新后的context
+  - context_update_existing：现有节点更新后的context
+  - keywords_update_new：新节点更新后的keywords列表
+  - keywords_update_existing：现有节点更新后的keywords列表
 
 **关系类型定义**：
 
 1. **unrelated**：无关，两个节点在语义/主题/逻辑上无关联
 2. **related**：相关，两个节点在语义/主题/逻辑上有关联，建立related边
 3. **conflict**：冲突状态，两个节点的内容互相矛盾，触发Cross Validation流程
-4. **merge**：合并状态，两个节点描述相同或高度重叠的内容，触发节点合并操作
 
-**判断标准**：由Agent基于prompt规则自主判断，返回JSON格式的结构化输出。
+**判断标准**：由Agent基于prompt规则自主判断，返回结构化输出。
 
 **后续硬编码处理**（根据Agent输出）：
 - **related**：调用图操作模块创建related边；调用Context与Keywords更新模块更新两个节点的context和keywords
 - **conflict**：标记conflict状态，传递给【计划Agent】
-- **merge**：调用【记忆整合Agent】
 
 #### 3.2.4 【记忆整合Agent】
 
 **职责**：基于多个节点的内容，生成整合后的新节点内容，并为继承的邻居节点提供context和keywords更新建议。
 
 **触发场景**：
-1. 【记忆分析Agent】判断为merge关系
-2. 【记忆分析Agent】判断为conflict关系，经Cross Validation后需要合并
+- 【记忆分析Agent】判断为conflict关系，经Cross Validation后需要合并
 
 **输入**：
 - 待合并的节点列表（可以是2个或多个节点的id, summary, context, keywords）
 - 每个节点的邻居列表（id, context, keywords）
-- 触发原因：`merge` 或 `conflict`
-- 如果是conflict，还包括外部框架返回的验证结果
+- 外部框架返回的验证结果
 
 **输出**：整合后的新节点内容及邻居更新建议
-```json
-{
-  "summary": "整合后的详细摘要",
-  "context": "综合的主题描述",
-  "keywords": ["整合后的关键词列表"],
-  "neighbor_updates": {
-    "node_C": {
-      "context": "更新后的context（反映与新节点的关系）",
-      "keywords": ["更新后的keywords"]
-    },
-    "node_D": {
-      "context": "更新后的context（反映与新节点的关系）",
-      "keywords": ["更新后的keywords"]
-    }
-  },
-  "interaction_tree_description": "综合了节点A、B的内容，基于验证结果修正了..."
-}
-```
+- summary：整合后的详细摘要
+- context：综合的主题描述
+- keywords：整合后的关键词列表
+- neighbor_updates：邻居节点更新建议（字典形式，key为节点ID，value包含更新后的context和keywords）
+- interaction_tree_description：Interaction Tree中的合并操作描述
 
 **说明**：
-- `neighbor_updates`包含所有继承邻居的新context和keywords
+- neighbor_updates包含所有继承邻居的新context和keywords
 - 【记忆整合Agent】需要理解：
   - 被合并节点的原有邻居关系
   - 新节点与这些邻居的关系如何表述
@@ -392,12 +363,12 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 4. 节点H重新进入检索流程：
    - 检索时**排除C、D**（因为已经是继承的邻居）
    - 只检索新的候选节点
-   - 判断H与新候选节点的关系（可能还有conflict/merge）
+   - 判断H与新候选节点的关系（可能还有conflict）
 
 **合并策略规则**：通过prompt预定义，如：
 - 保留更新的信息（基于timestamp）
 - 综合所有节点优势，补充缺失信息
-- 如果是conflict触发的合并，以验证结果为准
+- 以验证结果为准
 - 为继承的邻居生成合理的context和keywords更新（反映与新节点的关系）
 
 #### 3.2.5 【计划Agent】
@@ -407,35 +378,22 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 **输入**：
 - Insight Doc（任务状态层）
 - 新加入的Query Graph记忆节点（summary、context、keywords）
-- 可选：conflict/merge通知
+- 可选：conflict通知
 
-**输出**：更新后的Insight Doc
-```json
-{
-  "task_goal": "研究量子计算在2023年的最新突破...",
-  "completed_tasks": [
-    {
-      "type": "搜索",
-      "description": "搜索量子计算硬件突破",
-      "status": "成功",
-      "context": "找到IBM和Google的量子芯片信息"
-    }
-  ],
-  "pending_tasks": [
-    "验证IBM和Google的量子比特数冲突",
-    "搜索量子算法进展"
-  ]
-}
-```
+**输出**：更新后的Insight Doc，包含以下内容
+- task_goal：任务总目标描述
+- completed_tasks：已完成的子任务列表（每个子任务包含type、description、status和context）
+- pending_tasks：待办任务列表
 
 **策略**：
 - **增量式规划**：每次只决定下一步要做什么，参考完整历史但不重新规划全部
 - **动态调整**：根据新记忆和任务执行结果，灵活调整待办任务
-- **冲突响应**：当检测到conflict关系时，插入高优先级的Cross Validation任务
+- **冲突响应**：当检测到conflict关系时，规划Cross Validation任务作为下一步
 
 **终止判断**：
 - 如果待办任务列表为空，且所有子任务状态为"成功"，系统终止
 - 否则继续执行循环
+- 任务终止完全由【计划Agent】自主判断，不设置硬性的最大循环次数限制
 
 **可选优化**：采用SFT、RL后的专用模型。
 
@@ -449,6 +407,13 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 **设计定位**：Agentic Memory Bank提供一种记忆管理范式，外部Agent框架（如ReAct）通过【适配器Adapter】与该系统交互，实现长上下文的结构化管理。
 
+**标记格式规范**：
+
+为提高系统的可解析性和与ReAct框架的兼容性，定义以下标记schema：
+- `<task>...</task>`：表示Insight Doc内容
+- `<memory>...</memory>`：表示Query Graph记忆节点
+- `<tool_call>...</tool_call>` / `<tool_response>...</tool_response>`：表示Deep Retrieval工具调用和响应
+
 **功能1：Prompt增强（初始化 + 每轮循环开始）**
 
 增强流程：
@@ -456,10 +421,10 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 2. 调用检索模块，根据当前任务从Query Graph检索相关记忆：
    - 使用混合检索（`α × Attribute + (1-α) × Embedding`）
    - 返回top-k节点 + 每个节点的一层邻居
+   - 按timestamp降序排列
 3. 组装增强Prompt：
-   - Deep Retrieval工具声明和使用说明
-   - Insight Doc完整内容
-   - 检索到的相关Query Graph记忆（summary + context + keywords）
+   - 使用`<task>`标记包裹Insight Doc完整内容
+   - 使用`<memory>`标记包裹检索到的相关Query Graph记忆（summary + context + keywords）
 4. 传递给外部框架
 
 **功能2：上下文拦截（每轮循环结束）**
@@ -471,22 +436,107 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
    - 如果是Cross Validation任务：直接传给【记忆整合Agent】处理冲突
    - 如果是普通任务：传给【分类/聚类Agent】开始记忆更新流程
 
+**错误处理**：
+- Agent调用失败时，记录错误日志并尝试重试一次
+- 如果连续失败，标记当前任务为失败状态并继续执行
+
 #### 3.3.2 【深入检索Deep Retrieval工具】
 
 **职责**：供外部框架调用，读取特定Query Graph记忆的Interaction Tree完整内容。
 
+**工具声明**：在ReAct框架初始化时声明该工具，作为标准工具集的一部分，供整个执行过程使用。
+
+**调用模式**：采用两阶段调用设计
+
+**第一阶段：获取完整文本和附件概览**
+
 **输入**：
 - Query Graph节点id
-- 可选：Interaction Tree子节点id（如果需要特定的多模态内容）
 
 **输出**：
-- Interaction Tree父节点的完整文本
-- 如果指定子节点id，返回该子节点的完整内容
+- 所有Interaction Tree Entry的完整文本（text字段）
+- 每个Entry的附件列表（包含attachment id、type、content路径，但不包含文件实际内容）
+- 按timestamp排序
+
+**第二阶段：获取特定附件内容（可选）**
+
+**输入**：
+- Query Graph节点id
+- Interaction Tree附件id（从第一阶段的返回结果中获取）
+
+**输出**：
+- 指定附件的文件路径
+- 指定附件的文件实际内容（根据type类型处理：图片返回base64编码，文档返回解析后的文本或base64，代码返回原始文本）
 
 **使用场景**：
 - 外部框架发现Query Graph的summary不够详细
-- 需要查看原始推理过程
-- 需要访问图片、PDF等多模态子节点
+- 需要查看原始推理过程（第一阶段调用即可）
+- 需要访问图片、PDF等多模态附件的实际内容（需要第二阶段调用）
+
+**设计理由**：
+- 第一阶段返回附件概览，让外部框架知道有哪些附件可用
+- 第二阶段按需获取，避免不必要的大文件传输
+- 大部分情况下，Entry的text已足够详细，无需查看附件
+
+**调用格式**：使用ReAct标准的`<tool_call>`/`<tool_response>`标记
+
+**示例**：
+
+第一阶段调用：
+```json
+{
+  "tool": "deep_retrieval",
+  "parameters": {
+    "query_node_id": "node-1"
+  }
+}
+```
+
+返回：
+```json
+{
+  "entries": [
+    {
+      "entry_id": "entry-1",
+      "text": "搜索了IBM量子芯片的技术规格...",
+      "timestamp": "2024-01-10T10:00:00Z",
+      "attachments": [
+        {
+          "id": "att-1",
+          "type": "document",
+          "content": "papers/ibm_quantum.pdf"
+        },
+        {
+          "id": "att-2",
+          "type": "image",
+          "content": "diagrams/quantum_chip.png"
+        }
+      ]
+    }
+  ]
+}
+```
+
+第二阶段调用（可选）：
+```json
+{
+  "tool": "deep_retrieval",
+  "parameters": {
+    "query_node_id": "node-1",
+    "attachment_id": "att-2"
+  }
+}
+```
+
+返回：
+```json
+{
+  "attachment_id": "att-2",
+  "type": "image",
+  "content": "diagrams/quantum_chip.png",
+  "file_content": "data:image/png;base64,iVBORw0KGgoAAAANS..."
+}
+```
 
 ---
 
@@ -521,16 +571,12 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 8. **【记忆分析Agent】判断关系**（两阶段）：
 
-   **第一阶段：优先判断conflict/merge**
+   **第一阶段：优先判断conflict**
    - 输入：新节点（summary、context、keywords）+ 候选节点列表（summary、context、keywords）
-   - 批量判断新节点与候选节点是否有conflict或merge关系
+   - 批量判断新节点与候选节点是否有conflict关系
    - 处理结果：
-     - **如果有conflict**：标记conflict关系，跳到步骤9（【计划Agent】会插入Cross Validation任务）
-     - **如果有merge（且无conflict）**：
-       - 调用【记忆整合Agent】生成整合后的新节点
-       - 硬编码：计算新节点embedding（基于summary、context、keywords），继承边，更新邻居的context、keywords和embedding，删除旧节点
-       - 递归回到步骤7（重新检索和判断）
-     - **如果既无conflict也无merge**：进入第二阶段
+     - **如果有conflict**：标记conflict关系，跳到步骤9（【计划Agent】会规划Cross Validation任务作为下一步）
+     - **如果无conflict**：进入第二阶段
 
    **第二阶段：判断related关系**
    - 批量判断新节点与候选节点的related关系
@@ -549,8 +595,8 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
 
 11. **【适配器Adapter】增强Prompt**：
     - 读取Insight Doc
-    - 硬编码：调用检索模块，检索当前待办任务相关Query Graph记忆（混合检索，top-k + 一层邻居）
-    - 组装：Deep Retrieval工具声明 + Insight Doc + 相关记忆
+    - 硬编码：调用检索模块，检索当前待办任务相关Query Graph记忆（混合检索，top-k + 一层邻居，按timestamp降序排列）
+    - 组装：使用`<task>`标记包裹Insight Doc + 使用`<memory>`标记包裹相关记忆
     - 传入外部框架
 
 ### 4.2 执行循环
@@ -579,7 +625,7 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
     - 新节点递归进入步骤7（重新检索和判断）
       - 检索时排除已知邻居（继承的边）
       - 判断与新候选节点的关系
-      - 如果还有conflict/merge，递归处理
+      - 如果还有conflict，递归处理
       - 直到只剩related关系
 
     **分支2：普通任务**
@@ -605,9 +651,9 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
    - 记录conflict关系状态（不建立特殊的边）
    - 将新节点暂时加入Memory Bank（等待验证）
 
-2. **插入验证任务**：
+2. **规划验证任务**：
    - 【计划Agent】分析冲突记忆
-   - 在待办任务列表最前面插入高优先级任务：
+   - 规划Cross Validation任务作为下一步：
      - 任务类型：Cross Validation
      - 任务描述：验证节点A和节点B的冲突（具体说明冲突点）
      - 执行方式：调用Search等工具检索多源信息进行交叉验证
@@ -623,3 +669,7 @@ Agentic Memory Bank采用三层结构来管理Long-Context：
    - 【记忆整合Agent】基于conflict触发原因和验证结果生成整合后的新节点
    - 硬编码：删除冲突节点，创建新节点，继承边，更新邻居
    - 生成新的整合节点，继续正常流程
+
+**边界情况处理**：
+- 当前版本暂不处理"验证无法得出明确结论"或"两个节点都错误"的情况
+- 这些情况将在未来版本中扩展支持
