@@ -104,6 +104,55 @@ class Config:
             os.getenv("PLANNING_AGENT_WINDOW", "8000")
         )
 
+        # ===== Agent LLM 参数配置 =====
+        # Classification Agent
+        self.CLASSIFICATION_AGENT_TEMPERATURE = float(
+            os.getenv("CLASSIFICATION_AGENT_TEMPERATURE", "0.4")
+        )
+        self.CLASSIFICATION_AGENT_TOP_P = float(
+            os.getenv("CLASSIFICATION_AGENT_TOP_P", "0.9")
+        )
+
+        # Structure Agent
+        self.STRUCTURE_AGENT_TEMPERATURE = float(
+            os.getenv("STRUCTURE_AGENT_TEMPERATURE", "0.1")
+        )
+        self.STRUCTURE_AGENT_TOP_P = float(
+            os.getenv("STRUCTURE_AGENT_TOP_P", "0.8")
+        )
+
+        # Analysis Agent
+        self.ANALYSIS_AGENT_TEMPERATURE = float(
+            os.getenv("ANALYSIS_AGENT_TEMPERATURE", "0.4")
+        )
+        self.ANALYSIS_AGENT_TOP_P = float(
+            os.getenv("ANALYSIS_AGENT_TOP_P", "0.9")
+        )
+
+        # Integration Agent
+        self.INTEGRATION_AGENT_TEMPERATURE = float(
+            os.getenv("INTEGRATION_AGENT_TEMPERATURE", "0.2")
+        )
+        self.INTEGRATION_AGENT_TOP_P = float(
+            os.getenv("INTEGRATION_AGENT_TOP_P", "0.85")
+        )
+
+        # Planning Agent
+        self.PLANNING_AGENT_TEMPERATURE = float(
+            os.getenv("PLANNING_AGENT_TEMPERATURE", "0.6")
+        )
+        self.PLANNING_AGENT_TOP_P = float(
+            os.getenv("PLANNING_AGENT_TOP_P", "0.95")
+        )
+
+        # ReAct Agent
+        self.REACT_AGENT_TEMPERATURE = float(
+            os.getenv("REACT_AGENT_TEMPERATURE", "0.6")
+        )
+        self.REACT_AGENT_TOP_P = float(
+            os.getenv("REACT_AGENT_TOP_P", "0.95")
+        )
+
         # ===== 超长文本处理 =====
         self.CHUNK_RATIO = float(os.getenv("CHUNK_RATIO", "0.9"))
 

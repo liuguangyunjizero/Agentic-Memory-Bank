@@ -223,22 +223,17 @@ class InteractionTree:
 
         合并逻辑：
         1. 记录合并事件
-        2. 将旧节点的 entries 关联到新节点
+        2. 删除旧节点的 entries（因为merge都是cross_validate纠错，旧信息已无效）
 
         Args:
             merge_event: MergeEvent 实例
         """
         self.merge_events.append(merge_event)
 
-        # 重新挂接：将旧节点的 entries 关联到新节点
+        # 删除旧节点的entries（cross_validate纠错场景，旧信息基于错误前提，应该删除）
         for old_node_id in merge_event.merged_node_ids:
             if old_node_id in self.node_to_entries:
-                entries = self.node_to_entries[old_node_id]
-
-                if merge_event.new_node_id not in self.node_to_entries:
-                    self.node_to_entries[merge_event.new_node_id] = []
-
-                self.node_to_entries[merge_event.new_node_id].extend(entries)
+                del self.node_to_entries[old_node_id]
 
     def get_merge_events(self) -> List[MergeEvent]:
         """

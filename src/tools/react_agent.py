@@ -32,7 +32,9 @@ class MultiTurnReactAgent:
         tools: Dict[str, Any],
         system_message: str,
         max_iterations: int = 60,
-        max_context_tokens: int = 32000
+        max_context_tokens: int = 32000,
+        temperature: float = 0.6,
+        top_p: float = 0.95
     ):
         """
         初始化ReAct Agent
@@ -43,16 +45,21 @@ class MultiTurnReactAgent:
             system_message: System Prompt
             max_iterations: 最大迭代次数
             max_context_tokens: 最大上下文Token数
+            temperature: 温度参数
+            top_p: 采样参数
         """
         self.llm_client = llm_client
         self.tools = tools
         self.system_message = system_message
         self.max_iterations = max_iterations
         self.max_context_tokens = max_context_tokens
+        self.temperature = temperature
+        self.top_p = top_p
         logger.info(
             f"MultiTurnReactAgent初始化完成: "
             f"tools={list(tools.keys())}, "
-            f"max_iterations={max_iterations}"
+            f"max_iterations={max_iterations}, "
+            f"temp={temperature}, top_p={top_p}"
         )
 
     def run(self, question: str) -> Dict[str, Any]:
@@ -71,11 +78,11 @@ class MultiTurnReactAgent:
                 "iterations_used": int  # 使用的迭代次数
             }
         """
-        logger.info(f"开始ReAct循环: {question[:100]}...")
+        logger.info(f"开始ReAct循环（任务长度: {len(question)} 字符）")
         print(f"\n{'='*80}")
         print(f"🤖 ReAct Agent 开始执行")
         print(f"{'='*80}")
-        print(f"任务: {question[:200]}{'...' if len(question) > 200 else ''}")
+        print(f"任务: {question}")
         print(f"{'='*80}\n")
 
         # 1. 初始化
@@ -95,7 +102,11 @@ class MultiTurnReactAgent:
 
             # 2.1 调用LLM
             try:
-                response = self.llm_client.call(messages)
+                response = self.llm_client.call(
+                    messages,
+                    temperature=self.temperature,
+                    top_p=self.top_p
+                )
             except Exception as e:
                 logger.error(f"LLM调用失败: {str(e)}")
                 return {
@@ -147,7 +158,7 @@ class MultiTurnReactAgent:
                     print(f"\n{'='*80}")
                     print(f"✅ ReAct Agent 完成 - 获得最终答案")
                     print(f"{'='*80}\n")
-                    logger.info(f"获得答案: {answer[:100]}...")
+                    logger.info(f"获得答案: {answer[:300]}{'...' if len(answer) > 300 else ''}")
                     return {
                         "question": question,
                         "prediction": answer,

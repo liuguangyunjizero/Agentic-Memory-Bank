@@ -84,22 +84,21 @@ class MemoryBankAdapter:
                 lines.append(f"{idx}. [{task.type.value}] {task.description} - {task.status}")
                 lines.append(f"   Context: {task.context}")
 
-        if insight_doc.pending_tasks:
+        if insight_doc.current_task:
             lines.append("")
-            lines.append("Pending tasks:")
-            for idx, pending in enumerate(insight_doc.pending_tasks, 1):
-                lines.append(f"{idx}. {pending}")
+            lines.append("Current task:")
+            lines.append(f"1. {insight_doc.current_task}")
         else:
             lines.append("")
-            lines.append("Pending tasks: none")
+            lines.append("Current task: none")
 
         return "\n".join(lines)
 
     def _build_memory_section(self, insight_doc) -> str:
-        if not insight_doc.pending_tasks:
+        if not insight_doc.current_task:
             return "No related memory"
 
-        query_text = insight_doc.pending_tasks[0]
+        query_text = insight_doc.current_task
         query_embedding = self.memory_bank.embedding_module.compute_embedding(query_text)
 
         # 提取关键词：使用正则提取中文词组（2+字符）和英文单词（2+字符）
@@ -203,13 +202,26 @@ class MemoryBankAdapter:
         )
         self.memory_bank.interaction_tree.record_merge(merge_event)
 
-        if insight_doc.pending_tasks:
-            pending_desc = insight_doc.pending_tasks.pop(0)
+        # 为cross_validate操作创建interaction tree entry
+        from ..storage.interaction_tree import create_entry
+        validate_entry = create_entry(
+            text=validation_result,
+            metadata={"source": "cross_validate", "merged_node_ids": conflict_ids},
+        )
+        self.memory_bank.interaction_tree.add_entry(new_node.id, validate_entry)
+
+        if insight_doc.current_task:
+            pending_desc = insight_doc.current_task
+            # 从merged_node的summary中提取核心信息作为context
+            # summary应该包含了Integration Agent整合后的核心结论
+            context_summary = merged["summary"][:200] if len(merged["summary"]) > 200 else merged["summary"]
+            validation_context = f"{context_summary}"
+
             insight_doc.add_completed_task(
                 task_type=TaskType.CROSS_VALIDATE,
                 description=pending_desc,
                 status="成功",
-                context=f"合并节点 {', '.join(conflict_ids)}",
+                context=validation_context,
             )
 
         planning_output = self.memory_bank.planning_agent.run(
@@ -221,30 +233,75 @@ class MemoryBankAdapter:
         )
         insight_doc.task_goal = planning_output.task_goal
         insight_doc.completed_tasks = planning_output.completed_tasks
-        insight_doc.pending_tasks = planning_output.pending_tasks
+        insight_doc.current_task = planning_output.current_task
 
     # ------------------------------------------------------------------
     # Normal task handling
     # ------------------------------------------------------------------
 
     def _handle_normal_task(self, context: str, insight_doc) -> None:
+        # 提取当前任务（如果没有任务，使用 task_goal）
+        current_task = insight_doc.current_task if insight_doc.current_task else insight_doc.task_goal
+
+        logger.info("🔍 步骤1/4: 调用 Classification Agent 解析上下文...")
+
+        # Classification Agent 输入
+        logger.debug("="*80)
+        logger.debug("📝 Classification Agent 输入:")
+        logger.debug(f"  Current Task: {current_task}")
+        logger.debug(f"  Context 长度: {len(context)} 字符")
+        logger.debug("="*80)
+
         classification_output = self.memory_bank.classification_agent.run(
-            ClassificationInput(context=context, task_goal=insight_doc.task_goal)
+            ClassificationInput(
+                context=context,
+                task_goal=insight_doc.task_goal,
+                current_task=current_task
+            )
         )
+
+        # Classification Agent 输出
+        logger.debug("="*80)
+        logger.debug("📤 Classification Agent 输出:")
+        logger.debug(f"  是否需要分类: {classification_output.should_cluster}")
+        logger.debug(f"  Cluster 数量: {len(classification_output.clusters)}")
+        for idx, cluster in enumerate(classification_output.clusters, 1):
+            logger.debug(f"  Cluster {idx}: {cluster.context} (关键词: {', '.join(cluster.keywords)})")
+        logger.debug("="*80)
 
         new_nodes: List[QueryGraphNode] = []
         conflicts: List[Dict[str, str]] = []
         context_updates: Dict[str, Dict[str, Optional[List[str]]]] = {}
 
+        logger.info(f"📝 步骤2/4: 处理 {len(classification_output.clusters)} 个 cluster（调用 Structure + Analysis Agent）...")
         for cluster in classification_output.clusters:
+            logger.info(f"  - 调用 Structure Agent 压缩内容...")
+
+            # Structure Agent 输入（精简版：不记录完整content）
+            logger.debug("="*80)
+            logger.debug("📝 Structure Agent 输入:")
+            logger.debug(f"  Current Task: {current_task}")
+            logger.debug(f"  Context: {cluster.context}")
+            logger.debug(f"  Keywords: {cluster.keywords}")
+            logger.debug(f"  Content 长度: {len(cluster.content)} 字符")
+            logger.debug("="*80)
+
             structure_output = self.memory_bank.structure_agent.run(
                 StructureInput(
                     content=cluster.content,
                     context=cluster.context,
                     keywords=cluster.keywords,
+                    current_task=current_task,
                 )
             )
 
+            # Structure Agent 输出
+            logger.debug("="*80)
+            logger.debug("📤 Structure Agent 输出:")
+            logger.debug(structure_output.summary)
+            logger.debug("="*80)
+
+            logger.info(f"  - 创建新节点（计算 embedding 用于检索）...")
             node = self.memory_bank._create_node(
                 summary=structure_output.summary,
                 context=cluster.context,
@@ -254,6 +311,7 @@ class MemoryBankAdapter:
             new_nodes.append(node)
             self.retrieval.mark_index_dirty()
 
+            logger.info(f"  - 检索相似节点...")
             candidates = self.retrieval.hybrid_retrieval(
                 query_embedding=node.embedding,
                 query_keywords=node.keywords,
@@ -262,6 +320,15 @@ class MemoryBankAdapter:
             )
 
             if candidates:
+                logger.info(f"  - 找到 {len(candidates)} 个候选节点，调用 Analysis Agent 分析关系...")
+
+                # Analysis Agent 输入
+                logger.debug("="*80)
+                logger.debug("📝 Analysis Agent 输入:")
+                logger.debug(f"  新节点: {node.context}")
+                logger.debug(f"  候选节点数量: {len(candidates)}")
+                logger.debug("="*80)
+
                 analysis_output = self.memory_bank.analysis_agent.run(
                     AnalysisInput(
                         new_node=NodeInfo(
@@ -281,6 +348,14 @@ class MemoryBankAdapter:
                         ],
                     )
                 )
+
+                # Analysis Agent 输出
+                logger.debug("="*80)
+                logger.debug("📤 Analysis Agent 输出:")
+                logger.debug(f"  关系数量: {len(analysis_output.relationships)}")
+                for rel in analysis_output.relationships:
+                    logger.debug(f"  - {rel.relationship}: {rel.reasoning[:100]}...")
+                logger.debug("="*80)
 
                 conflict_rels = [
                     rel for rel in analysis_output.relationships if rel.relationship == "conflict"
@@ -326,6 +401,7 @@ class MemoryBankAdapter:
             self.memory_bank.interaction_tree.add_entry(node.id, entry)
 
         if context_updates:
+            logger.info(f"🔗 步骤3/4: 批量更新 {len(context_updates)} 个已有节点（批量计算 embedding）...")
             self.memory_bank.context_updater.batch_update_node_contexts(context_updates)
             self.retrieval.mark_index_dirty()
 
@@ -340,6 +416,18 @@ class MemoryBankAdapter:
                 pair = [conflict["new"], conflict["existing"]]
                 if pair not in self._pending_conflicts:
                     self._pending_conflicts.append(pair)
+
+        logger.info("🎯 步骤4/4: 调用 Planning Agent 规划下一步任务...")
+
+        # Planning Agent 输入
+        logger.debug("="*80)
+        logger.debug("📝 Planning Agent 输入:")
+        logger.debug(f"  Task Goal: {insight_doc.task_goal}")
+        logger.debug(f"  已完成任务: {len(insight_doc.completed_tasks)}")
+        logger.debug(f"  当前任务: {insight_doc.current_task}")
+        logger.debug(f"  新记忆节点: {len(new_nodes)}")
+        logger.debug(f"  冲突通知: {'是' if conflict_notification else '否'}")
+        logger.debug("="*80)
 
         planning_output = self.memory_bank.planning_agent.run(
             PlanningInput(
@@ -356,9 +444,18 @@ class MemoryBankAdapter:
                 conflict_notification=conflict_notification,
             )
         )
+
+        # Planning Agent 输出
+        logger.debug("="*80)
+        logger.debug("📤 Planning Agent 输出:")
+        logger.debug(f"  Task Goal: {planning_output.task_goal}")
+        logger.debug(f"  已完成任务: {len(planning_output.completed_tasks)}")
+        logger.debug(f"  当前任务: {planning_output.current_task}")
+        logger.debug("="*80)
+
         insight_doc.task_goal = planning_output.task_goal
         insight_doc.completed_tasks = planning_output.completed_tasks
-        insight_doc.pending_tasks = planning_output.pending_tasks
+        insight_doc.current_task = planning_output.current_task
 
     # ------------------------------------------------------------------
     # Helpers

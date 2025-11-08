@@ -21,6 +21,7 @@ class StructureInput:
     content: str  # 单个 cluster 的原始内容
     context: str  # cluster 的主题描述（参考）
     keywords: List[str]  # cluster 的关键词（参考）
+    current_task: str  # 当前子任务（帮助判断哪些信息对当前任务重要）
 
 
 @dataclass
@@ -36,20 +37,28 @@ class StructureAgent(BaseAgent):
     将原始内容压缩成结构化摘要
     """
 
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, temperature: float = 0.1, top_p: float = 0.8):
         """
         初始化结构化 Agent
 
         Args:
             llm_client: LLMClient 实例
+            temperature: 温度参数（默认0.1，用于精确保留数据）
+            top_p: 采样参数（默认0.8，用于精确保留数据）
         """
         super().__init__(llm_client)
-        logger.info("结构化Agent初始化完成")
+        self.temperature = temperature
+        self.top_p = top_p
+        logger.info(f"结构化Agent初始化完成 (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "StructureAgent":
         """从配置创建Agent"""
-        return cls(llm_client=llm_client)
+        return cls(
+            llm_client=llm_client,
+            temperature=config.STRUCTURE_AGENT_TEMPERATURE,
+            top_p=config.STRUCTURE_AGENT_TOP_P
+        )
 
     def run(self, input_data: StructureInput) -> StructureOutput:
         """
@@ -63,10 +72,38 @@ class StructureAgent(BaseAgent):
         """
         prompt = self._build_prompt(input_data)
 
-        logger.debug("调用LLM进行结构化...")
-        response = self._call_llm(prompt)
+        logger.debug(f"调用LLM进行结构化 (temp={self.temperature}, top_p={self.top_p})...")
+        # 使用配置的temperature和top_p来减少hallucination
+        # 确保<answer>标签内容被准确复制
+        response = self._call_llm_with_params(prompt, temperature=self.temperature, top_p=self.top_p)
 
         return self._parse_response(response)
+
+    def _call_llm_with_params(self, prompt: str, temperature: float, top_p: float) -> str:
+        """
+        使用指定参数调用LLM
+
+        Args:
+            prompt: 输入prompt
+            temperature: 温度参数
+            top_p: 采样参数
+
+        Returns:
+            LLM响应
+        """
+        try:
+            response = self.llm_client.call(prompt, temperature=temperature, top_p=top_p)
+
+            # 记录LLM原始响应
+            logger.debug("="*80)
+            logger.debug("📤 Structure Agent LLM原始响应:")
+            logger.debug(response)
+            logger.debug("="*80)
+
+            return response
+        except Exception as e:
+            logger.error(f"LLM 调用失败: {str(e)}")
+            raise
 
     def _build_prompt(self, input_data: StructureInput) -> str:
         """
@@ -79,6 +116,7 @@ class StructureAgent(BaseAgent):
             完整 prompt
         """
         return STRUCTURE_PROMPT.format(
+            current_task=input_data.current_task,
             context=input_data.context,
             keywords=", ".join(input_data.keywords),
             content=input_data.content

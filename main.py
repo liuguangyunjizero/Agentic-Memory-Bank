@@ -29,19 +29,53 @@ def setup_logging(verbose: bool = False):
 
     Args:
         verbose: 是否显示详细调试信息
-    """
-    level = logging.DEBUG if verbose else logging.WARNING
 
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    日志策略：
+    - 控制台：INFO级别，显示必要信息
+    - 文件：DEBUG级别，显示所有详细内容（包括所有agent的输入输出、记忆节点等）
+    """
+    # 创建logs目录
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+
+    # 生成日志文件名（按日期时间）
+    log_filename = logs_dir / f"memory_bank_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    # 创建root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # root设置为DEBUG，让所有消息都能传递
+
+    # 清除已有的handlers
+    root_logger.handlers.clear()
+
+    # 1. Console Handler - INFO级别（只显示必要信息）
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO if not verbose else logging.DEBUG)
+    console_format = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    console_handler.setFormatter(console_format)
+    root_logger.addHandler(console_handler)
+
+    # 2. File Handler - DEBUG级别（显示所有详细内容）
+    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_format = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_format)
+    root_logger.addHandler(file_handler)
 
     # 始终禁用第三方库的INFO日志
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+
+    # 输出日志文件位置
+    logging.info(f"📝 日志文件: {log_filename}")
+
 
 
 def setup_display_hook():

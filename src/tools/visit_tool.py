@@ -10,7 +10,6 @@ import logging
 import json
 from typing import Dict, Any
 import requests
-from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +41,20 @@ class VisitTool:
 
         Args:
             llm_client: LLMClient 实例（用于内容提取）
-            jina_api_key: Jina Reader API key（如果提供，使用Jina；否则使用BeautifulSoup）
+            jina_api_key: Jina Reader API key（必需）
             max_content_length: 最大内容长度（字符数）
         """
+        if not jina_api_key or jina_api_key == "your-jina-api-key-here":
+            raise ValueError(
+                "未配置Jina API key。请在.env文件中设置JINA_API_KEY。\n"
+                "注册地址：https://jina.ai/"
+            )
+
         self.llm_client = llm_client
         self.jina_api_key = jina_api_key
         self.max_content_length = max_content_length
 
-        # 根据是否有Jina API key决定使用哪种方式
-        if jina_api_key and jina_api_key != "your-jina-api-key-here":
-            self.use_jina = True
-            logger.info("VisitTool初始化完成 (使用Jina Reader API)")
-        else:
-            self.use_jina = False
-            logger.info("VisitTool初始化完成 (使用BeautifulSoup + LLM提取)")
+        logger.info("VisitTool初始化完成 (使用Jina Reader API)")
 
     def call(self, params: Dict[str, Any]) -> str:
         """
@@ -71,33 +70,22 @@ class VisitTool:
         goal = params.get("goal", "")
 
         if not url:
-            error_msg = "Error: url parameter is required"
-            logger.error(error_msg)
-            return json.dumps({"error": error_msg}, ensure_ascii=False)
+            raise ValueError("url parameter is required")
 
         logger.info(f"访问网页: {url}")
         logger.debug(f"提取目标: {goal}")
 
-        try:
-            if self.use_jina:
-                content = self._jina_reader(url, goal)
-            else:
-                content = self._beautifulsoup_reader(url, goal)
+        content = self._jina_reader(url, goal)
 
-            output = {
-                "url": url,
-                "goal": goal,
-                "content": content,
-                "content_length": len(content)
-            }
+        output = {
+            "url": url,
+            "goal": goal,
+            "content": content,
+            "content_length": len(content)
+        }
 
-            logger.info(f"网页访问完成: {len(content)} 字符")
-            return json.dumps(output, ensure_ascii=False, indent=2)
-
-        except Exception as e:
-            error_msg = f"Visit failed: {str(e)}"
-            logger.error(error_msg)
-            return json.dumps({"error": error_msg}, ensure_ascii=False)
+        logger.info(f"网页访问完成: {len(content)} 字符")
+        return json.dumps(output, ensure_ascii=False, indent=2)
 
     def _jina_reader(self, url: str, goal: str) -> str:
         """
@@ -113,8 +101,9 @@ class VisitTool:
         logger.debug(f"使用Jina Reader API: {url}")
 
         max_retries = 3
-        timeout = 30
+        timeout = 60  # 增加超时时间到60秒
 
+        last_error = None
         for attempt in range(max_retries):
             try:
                 headers = {
@@ -144,71 +133,18 @@ class VisitTool:
                     return webpage_content
 
                 else:
-                    logger.warning(f"Jina Reader返回错误: {response.status_code}")
-                    raise ValueError(f"Jina Reader error: {response.status_code}")
+                    error_msg = f"Jina Reader返回错误状态码: {response.status_code}"
+                    logger.warning(f"尝试 {attempt+1}/{max_retries}: {error_msg}")
+                    last_error = ValueError(error_msg)
 
             except Exception as e:
                 logger.warning(f"Jina Reader尝试 {attempt+1}/{max_retries} 失败: {str(e)}")
-                if attempt == max_retries - 1:
-                    # 最后一次失败，回退到BeautifulSoup
-                    logger.warning("Jina Reader失败，回退到BeautifulSoup")
-                    return self._beautifulsoup_reader(url, goal)
+                last_error = e
 
-        return "[visit] Failed to read page."
-
-    def _beautifulsoup_reader(self, url: str, goal: str) -> str:
-        """
-        使用BeautifulSoup读取网页（回退方案）
-
-        Args:
-            url: 网页URL
-            goal: 提取目标
-
-        Returns:
-            提取的网页内容
-        """
-        logger.debug(f"使用BeautifulSoup: {url}")
-
-        try:
-            # 1. 获取网页内容
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding
-
-            # 2. 解析HTML
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # 移除script和style标签
-            for script in soup(["script", "style"]):
-                script.decompose()
-
-            # 提取文本
-            text = soup.get_text()
-
-            # 清理空行
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-
-            # 3. 截断过长内容
-            if len(text) > self.max_content_length:
-                text = text[:self.max_content_length]
-                logger.warning(f"内容过长，已截断到 {self.max_content_length} 字符")
-
-            # 4. 如果有LLM客户端且有goal，使用LLM提取相关内容
-            if self.llm_client and goal:
-                extracted_content = self._extract_with_llm(text, goal, url)
-                return extracted_content
-
-            # 5. 否则返回原始文本
-            return text
-
-        except Exception as e:
-            logger.error(f"BeautifulSoup读取失败: {str(e)}")
-            raise
+        # 所有重试都失败，抛出最后一个错误
+        error_msg = f"访问 {url} 失败（重试{max_retries}次后）: {str(last_error)}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg) from last_error
 
     def _extract_with_llm(self, full_text: str, goal: str, url: str = "") -> str:
         """
@@ -230,6 +166,7 @@ class VisitTool:
         )
 
         try:
+            # 调用LLM提取相关内容
             response = self.llm_client.call(prompt)
 
             # 尝试解析JSON
@@ -261,10 +198,8 @@ Summary:
 
         except Exception as e:
             logger.error(f"LLM提取失败: {str(e)}")
-            # 回退到返回截断的原始文本
-            return full_text[:5000] + "\n... [内容过长，已截断]"
+            raise RuntimeError(f"使用LLM提取网页内容失败: {str(e)}") from e
 
     def __repr__(self) -> str:
         """返回工具摘要"""
-        mode = "Jina Reader API" if self.use_jina else "BeautifulSoup"
-        return f"VisitTool(name={self.name}, mode={mode})"
+        return f"VisitTool(name={self.name}, mode=Jina Reader API)"

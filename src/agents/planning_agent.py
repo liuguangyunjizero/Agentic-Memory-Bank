@@ -36,7 +36,7 @@ class PlanningOutput:
     """计划 Agent 输出"""
     task_goal: str
     completed_tasks: List[CompletedTask]  # ✅ 修复：使用 CompletedTask 对象列表
-    pending_tasks: List[str]  # 通常 0-1 个
+    current_task: str  # 空字符串表示无任务
 
 
 class PlanningAgent(BaseAgent):
@@ -46,20 +46,28 @@ class PlanningAgent(BaseAgent):
     增量式规划策略，每次只决定下一步
     """
 
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, temperature: float = 0.6, top_p: float = 0.95):
         """
         初始化计划 Agent
 
         Args:
             llm_client: LLMClient 实例
+            temperature: 温度参数
+            top_p: 采样参数
         """
         super().__init__(llm_client)
-        logger.info("计划Agent初始化完成")
+        self.temperature = temperature
+        self.top_p = top_p
+        logger.info(f"计划Agent初始化完成 (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "PlanningAgent":
         """从配置创建Agent"""
-        return cls(llm_client=llm_client)
+        return cls(
+            llm_client=llm_client,
+            temperature=config.PLANNING_AGENT_TEMPERATURE,
+            top_p=config.PLANNING_AGENT_TOP_P
+        )
 
     def run(self, input_data: PlanningInput) -> PlanningOutput:
         """
@@ -73,8 +81,14 @@ class PlanningAgent(BaseAgent):
         """
         prompt = self._build_prompt(input_data)
 
-        logger.debug("调用LLM进行任务规划...")
-        response = self._call_llm(prompt)
+        logger.debug(f"调用LLM进行任务规划 (temp={self.temperature}, top_p={self.top_p})...")
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+
+        # 记录LLM原始响应
+        logger.debug("="*80)
+        logger.debug("📤 Planning Agent LLM原始响应:")
+        logger.debug(response)
+        logger.debug("="*80)
 
         return self._parse_response(response)
 
@@ -99,6 +113,11 @@ class PlanningAgent(BaseAgent):
             for task in input_data.insight_doc.completed_tasks
         ]
         completed_tasks_str = format_completed_tasks(completed_tasks)
+
+        # 格式化当前待办任务（重要！）
+        current_task_str = "（无）"
+        if input_data.insight_doc.current_task:
+            current_task_str = f"当前正在执行: {input_data.insight_doc.current_task}"
 
         # 格式化新记忆节点
         new_memory_str = "（无）"
@@ -129,6 +148,7 @@ class PlanningAgent(BaseAgent):
         return PLANNING_PROMPT.format(
             task_goal=input_data.insight_doc.task_goal,
             completed_tasks=completed_tasks_str,
+            current_task=current_task_str,
             new_memory_nodes=new_memory_str,
             conflict_notification=conflict_str
         )
@@ -147,7 +167,7 @@ class PlanningAgent(BaseAgent):
             data = self._parse_json_response(response)
 
             task_goal = data.get("task_goal", "")
-            pending_tasks = data.get("pending_tasks", [])
+            current_task = data.get("current_task", "")
 
             # ✅ 修复：将字典列表转换为 CompletedTask 对象列表
             completed_tasks_data = data.get("completed_tasks", [])
@@ -162,13 +182,13 @@ class PlanningAgent(BaseAgent):
             ]
 
             logger.info(
-                f"规划完成: 已完成={len(completed_tasks)}, 待办={len(pending_tasks)}"
+                f"规划完成: 已完成={len(completed_tasks)}, 当前任务={'是' if current_task else '否'}"
             )
 
             return PlanningOutput(
                 task_goal=task_goal,
                 completed_tasks=completed_tasks,
-                pending_tasks=pending_tasks
+                current_task=current_task
             )
 
         except Exception as e:

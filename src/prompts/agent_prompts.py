@@ -1,350 +1,416 @@
 """
-Agent Prompt 模板
+Agent Prompt Templates
 
-所有 LLM 驱动的 Agent 的 Prompt 模板
-参考 WebResummer 风格：简洁、清晰、直接
+All LLM-driven Agent Prompt Templates
+Reference: WebResummer style - concise, clear, direct
 
 """
 
 # ===========================================
-# 分类/聚类 Agent Prompt
+# Classification/Clustering Agent Prompt
 # ===========================================
 
-CLASSIFICATION_PROMPT = """请分析输入的上下文，判断是否需要按主题聚类。
+CLASSIFICATION_PROMPT = """Please analyze the input context and determine whether topic-based clustering is needed.
 
-## **上下文内容**
+## **Context Content**
 {context}
 
-## **任务目标**（可选）
-{task_goal}
+## **Task Reference Information (for understanding context only, not your task to execute)**
+- **Overall Task Goal**: {task_goal}
+- **Current Subtask**: {current_task}
 
-## **任务指南**
-1. **优先不分类**：只有当内容明确包含多个**不同主题**时才分类。大多数情况下保持为单一单元。
+## **Task Guidelines**
+1. **Prefer Not Clustering**: Only cluster when content clearly contains multiple **distinct topics**. In most cases, keep as a single unit.
 
-2. **何时分类**（必须同时满足以下条件）：
-   - 内容涉及完全不同的实体、事件或概念
-   - 这些主题之间缺乏直接联系
-   - 分开处理更有利于记忆组织
+2. **When to Cluster** (must satisfy ALL conditions):
+   - Content involves completely different entities, events, or concepts
+   - These topics lack direct connection
+   - Separate processing benefits memory organization
 
-3. **何时不分类**：
-   - 内容围绕同一主题或问题
-   - 内容描述同一事物的不同方面
-   - 内容是完整的文档/网页/对话
-   - 内容具有内在的结构和格式
-   - 不确定时，默认不分类
+3. **When NOT to Cluster**:
+   - Content revolves around the same topic or question
+   - Content describes different aspects of the same thing
+   - Content is a complete document/webpage/conversation
+   - Content has inherent structure and format
+   - When uncertain, default to NOT clustering
 
-4. **保留原始格式**："content" 字段必须保留原始文本的**所有格式**，包括缩进、换行符和特殊字符。
+4. **Extract Key Information** (based on current subtask):
+   - CONTEXT (topic description) should highlight content relevant to current subtask
+   - KEYWORDS should include key concepts from current subtask
 
-**使用 JSON 格式输出，包含 "should_cluster" 和 "clusters" 字段**
+**Output Format Requirements**: Use simple delimiter format (not JSON) to avoid escaping issues.
 
-单一主题示例：
-```json
-{{
-    "should_cluster": false,
-    "clusters": [
-        {{
-            "cluster_id": "c1",
-            "context": "一句话主题描述（15-30字）",
-            "content": "完整的原始文本内容（保留所有格式）",
-            "keywords": ["关键词1", "关键词2", "关键词3"]
-        }}
-    ]
-}}
+**Format Specification**:
+- First line: `SHOULD_CLUSTER: true` or `SHOULD_CLUSTER: false`
+- Each cluster separated by `=== CLUSTER [id] ===`
+- CONTEXT: One-sentence topic description (15-30 words)
+- KEYWORDS: Comma-separated keyword list
+- **⚠️ EXTREMELY IMPORTANT**: Between CONTENT_START and CONTENT_END, **must copy original text verbatim**
+  - ✅ Must copy all content completely, no omissions, truncations, or paraphrasing
+  - ✅ Preserve all formatting: line breaks, indentation, special characters, tags (like <think>, <tool_call>, <answer>, etc.)
+  - ❌ Absolutely NO summarizing, compressing, or using "..." as replacement
+  - ❌ Empty content will cause severe downstream task failures
+- Content can include any characters, no escaping needed
+
+Single topic example (no clustering):
+```
+SHOULD_CLUSTER: false
+
+=== CLUSTER c1 ===
+CONTEXT: One-sentence topic description (15-30 words)
+KEYWORDS: keyword1, keyword2, keyword3
+CONTENT_START
+Complete original text content, preserving all formatting.
+Can contain any special characters: quotes, backslashes, braces, etc.
+Including JSON format text is fine: {{"key": "value"}}
+CONTENT_END
 ```
 
-多主题示例：
-```json
-{{
-    "should_cluster": true,
-    "clusters": [
-        {{
-            "cluster_id": "c1",
-            "context": "主题1描述",
-            "content": "主题1的完整原始内容...",
-            "keywords": ["关键词1", "关键词2"]
-        }},
-        {{
-            "cluster_id": "c2",
-            "context": "主题2描述",
-            "content": "主题2的完整原始内容...",
-            "keywords": ["关键词3", "关键词4"]
-        }}
-    ]
-}}
+Multiple topics example (requires clustering):
+```
+SHOULD_CLUSTER: true
+
+=== CLUSTER c1 ===
+CONTEXT: Topic 1 description
+KEYWORDS: keyword1, keyword2
+CONTENT_START
+Complete original content for topic 1...
+CONTENT_END
+
+=== CLUSTER c2 ===
+CONTEXT: Topic 2 description
+KEYWORDS: keyword3, keyword4
+CONTENT_START
+Complete original content for topic 2...
+CONTENT_END
 ```
 
-**重要**：不确定时默认不分类。大多数情况下 "should_cluster" 应为 false。"""
+**Important**:
+- When uncertain, default to not clustering (SHOULD_CLUSTER: false)
+- Most cases should be a single cluster
+- Content can be directly copy-pasted, no escaping needed
+
+**⚠️ Final Emphasis**:
+Between CONTENT_START and CONTENT_END **must be a complete copy of the original text**, not a summary!
+- Operation: Copy-paste context content verbatim
+- Verification: Confirm content length is sufficient (empty content = severe error)
+- Clustering scenario: Each cluster copies the complete content of its corresponding portion
+
+Now, begin your classification task. Remember: **Must copy content completely!**"""
 
 
 # ===========================================
-# 结构化 Agent Prompt
+# Structure Agent Prompt
 # ===========================================
 
-STRUCTURE_PROMPT = """请将输入内容压缩成结构化的详细摘要，同时保留所有关键信息。目标压缩比：原文长度的 30-50%。
+STRUCTURE_PROMPT = """You are a professional information compression expert. Compress the input content into a structured summary while preserving key information.
 
-## **参考信息**
-- 主题：{context}
-- 关键词：{keywords}
+## **Reference Information**
+- Current Subtask: {current_task}
+- Topic: {context}
+- Keywords: {keywords}
 
-## **输入内容**
+## **Input Content**
 {content}
 
-## **任务指南**
-1. **必须保留**：
-   - 关键事实、数据和证据
-   - 重要的因果关系和逻辑链
-   - 核心观点和结论
-   - 实体名称、时间、地点等具体信息
-   - 专业术语和概念定义
+---
 
-2. **可以删除**：
-   - 冗余描述和重复内容
-   - 过渡性语句
-   - 非必要的修饰词
-   - 示例中的次要细节
+## **Compression Rules**
 
-3. **结构化要求**：
-   - 使用清晰的层次结构（如项目列表、分层描述）
-   - 保持逻辑连贯，避免碎片化
-   - 使用简洁准确的语言
-   - 突出重点信息
+### [Rule 1: <answer> Tags - 100% Complete Preservation]
+**If input contains `<answer>` tags**:
+- ✅ Must **copy verbatim** all content within the tags
+- ✅ Include all dates, numbers, names, formatting, punctuation
+- ❌ Absolutely NO modification, deletion, paraphrasing, summarizing, or "optimization"
+- ⚠️ This is the highest priority rule; violating it will cause severe errors
 
-**使用 JSON 格式输出，包含 "summary" 字段**
+### [Rule 2: Other Content - Preserve Logic Chain]
+**For content outside `<answer>` tags**:
+- Preserve: Core logic chain, key steps, important data
+- Remove: `<think>` tag content, tool call details, redundant descriptions, repeated content
 
-示例：
+---
+
+## **Output Format**
+
+Use JSON format with a "summary" field:
+
+**If `<answer>` tags present**:
 ```json
 {{
-    "summary": "**核心主题**：...\\n\\n**要点1**：...\\n- 细节：...\\n- 证据：...\\n\\n**要点2**：...\\n- 关键数据：...\\n- 逻辑关系：..."
+    "summary": "**Final Answer**: [Copy all content within <answer> tags verbatim here]\\n\\n**Acquisition Logic**: [Brief explanation of how answer was obtained, 1-2 sentences]"
 }}
 ```
 
-**重要**：确保压缩后的内容仍然完整可理解。保持专业术语和关键细节的准确性。"""
+**If no `<answer>` tags**:
+```json
+{{
+    "summary": "**Core Information**: [Key facts and data]\\n\\n**Logic Chain**: [Main steps and reasoning process]"
+}}
+```
+
+---
+
+**Important Reminder**: Accuracy of `<answer>` tag content is critical. Any modification will cause downstream task failures. Must preserve completely.
+
+Now, begin your compression task."""
 
 
 # ===========================================
-# 记忆分析 Agent Prompt
+# Memory Analysis Agent Prompt
 # ===========================================
 
-ANALYSIS_PROMPT = """你是专业的记忆关系分析专家。给定一个新节点和多个候选节点，判断它们之间的关系。
+ANALYSIS_PROMPT = """You are a professional memory relationship analysis expert. Given a new node and multiple candidate nodes, determine their relationships.
 
-## **新节点**
-- 摘要：{new_summary}
-- 主题：{new_context}
-- 关键词：{new_keywords}
+## **New Node**
+- Summary: {new_summary}
+- Topic: {new_context}
+- Keywords: {new_keywords}
 
-## **候选节点**
+## **Candidate Nodes**
 {candidates}
 
-## **关系规则**（优先级从高到低）
+## **Relationship Rules** (priority from high to low)
 
-**1. CONFLICT（冲突）- 最高优先级**
-- 定义：两个节点包含事实性矛盾，无法同时为真
-- 冲突示例：
-  * "2024年会议截止日期是3月1日" vs "2024年会议截止日期是4月1日"
-  * "会议在北京举行" vs "会议在上海举行"
-  * "实验结果为阳性" vs "实验结果为阴性"
-- 检测到冲突后立即标记
+**1. CONFLICT (Conflict) - Highest Priority**
+- Definition: Two nodes contain factual contradictions that cannot both be true
+- Conflict examples:
+  * "2024 conference deadline is March 1" vs "2024 conference deadline is April 1"
+  * "Conference in Beijing" vs "Conference in Shanghai"
+  * "Experiment result is positive" vs "Experiment result is negative"
+- Mark immediately when conflict detected
 
-**2. RELATED（相关）- 中等优先级**
-- 定义：两个节点在语义、主题或逻辑上相关，可以互相补充或支持
-- 相关示例：
-  * 同一会议的不同方面（投稿要求 + 评审流程）
-  * 同一技术的不同应用（量子计算 + 量子通信）
-  * 因果关系（研究问题 + 解决方案）
-  * 时间序列（早期研究 + 最新进展）
-- 如果相关，必须为**两个节点**都生成更新后的 context 和 keywords
+**2. RELATED (Related) - Medium Priority**
+- Definition: Two nodes are semantically, topically, or logically related and can complement or support each other
+- Related examples:
+  * Different aspects of same conference (submission requirements + review process)
+  * Different applications of same technology (quantum computing + quantum communication)
+  * Causal relationship (research question + solution)
+  * Time series (early research + latest advances)
+- If related, must generate updated context and keywords for **both nodes**
 
-**3. UNRELATED（无关）- 最低优先级**
-- 定义：两个节点之间没有实质性的语义或逻辑联系
+**3. UNRELATED (Unrelated) - Lowest Priority**
+- Definition: No substantial semantic or logical connection between two nodes
 
-## **输出要求**
-1. 使用严格的 JSON 格式，输出一个数组
-2. 必须判断**每个候选节点**的关系
-3. "relationship" 字段必须是："conflict"、"related" 或 "unrelated"
-4. "reasoning" 字段必须清楚解释判断理由
-5. 根据关系类型填写额外字段：
-   - 如果是 conflict：必须提供 "conflict_description"
-   - 如果是 related：必须提供 "context_update_new"、"context_update_existing"、"keywords_update_new"、"keywords_update_existing"
+## **Output Requirements**
+1. Use strict JSON format, output an array
+2. Must determine relationship for **each candidate node**
+3. "relationship" field must be: "conflict", "related", or "unrelated"
+4. "reasoning" field must clearly explain the judgment
+5. Fill additional fields based on relationship type:
+   - If conflict: must provide "conflict_description"
+   - If related: must provide "context_update_new", "context_update_existing", "keywords_update_new", "keywords_update_existing"
 
-**输出格式**：
+**Output Format**:
 ```json
 [
     {{
         "existing_node_id": "node_123",
         "relationship": "conflict",
-        "reasoning": "两个节点对同一事实给出了互相矛盾的描述：节点A说...，而新节点说...",
-        "conflict_description": "关于XX截止日期存在冲突：一个说3月1日，另一个说4月1日"
+        "reasoning": "Two nodes give contradictory descriptions of the same fact: Node A says..., while new node says...",
+        "conflict_description": "Conflict exists regarding XX deadline: one says March 1, the other says April 1"
     }},
     {{
         "existing_node_id": "node_456",
         "relationship": "related",
-        "reasoning": "两个节点都讨论XX会议信息，新节点补充了投稿要求，现有节点描述了评审流程",
-        "context_update_new": "XX会议投稿要求（与评审流程相关）",
-        "context_update_existing": "XX会议评审流程（与投稿要求相关）",
-        "keywords_update_new": ["XX会议", "投稿", "要求", "评审"],
-        "keywords_update_existing": ["XX会议", "评审", "流程", "投稿"]
+        "reasoning": "Both nodes discuss XX conference information, new node adds submission requirements, existing node describes review process",
+        "context_update_new": "XX conference submission requirements (related to review process)",
+        "context_update_existing": "XX conference review process (related to submission requirements)",
+        "keywords_update_new": ["XX conference", "submission", "requirements", "review"],
+        "keywords_update_existing": ["XX conference", "review", "process", "submission"]
     }},
     {{
         "existing_node_id": "node_789",
         "relationship": "unrelated",
-        "reasoning": "新节点讨论XX会议，而现有节点讨论YY技术，没有实质性联系"
+        "reasoning": "New node discusses XX conference, while existing node discusses YY technology, no substantial connection"
     }}
 ]
-```"""
+```
+
+Now, begin your analysis task."""
 
 
 # ===========================================
-# 记忆整合 Agent Prompt
+# Memory Integration Agent Prompt
 # ===========================================
 
-INTEGRATION_PROMPT = """你是专业的记忆整合专家。基于验证结果，智能整合多个冲突节点为统一的合并节点。
+INTEGRATION_PROMPT = """You are a professional memory integration expert. Based on validation results, intelligently integrate multiple conflicting nodes into a unified merged node.
 
-## **验证结果**
+## **Validation Result**
 {validation_result}
 
-## **待合并节点**
+## **Nodes to Merge**
 {nodes_to_merge}
 
-## **任务指南**
-1. **信息选择原则**：
-   - **准确性优先**：优先保留经权威来源验证的信息
-   - **时效性优先**：优先保留最新和最近更新的信息
-   - **完整性优先**：综合所有节点的优势信息，补充缺失内容
-   - **一致性保证**：解决所有矛盾，确保逻辑一致
+## **Task Guidelines**
+1. **Information Selection Principles**:
+   - **Accuracy Priority**: Prioritize information verified by authoritative sources
+   - **Timeliness Priority**: Prioritize the latest and most recently updated information
+   - **Completeness Priority**: Synthesize advantages of all nodes, supplement missing content
+   - **Consistency Guarantee**: Resolve all contradictions, ensure logical consistency
 
-2. **内容组织原则**：
-   - 保留所有正确的关键信息
-   - 清楚标注信息来源和时间（如验证结果提供）
-   - 使用结构化格式便于理解
-   - 保持专业性和客观性
+2. **Content Organization Principles**:
+   - Preserve all correct key information
+   - Clearly mark information sources and times (if provided by validation results)
+   - Use structured format for easy understanding
+   - Maintain professionalism and objectivity
 
-3. **邻居节点更新逻辑**：
-   - 原节点 A 的邻居 C 的 context 描述的是"与 A 的关系"
-   - 合并为节点 H 后，更新 C 的 context 为"与 H 的关系"
-   - 更新 C 的 keywords 以反映新的关联
+3. **Neighbor Node Update Logic**:
+   - Original node A's neighbor C's context describes "relationship with A"
+   - After merging into node H, update C's context to "relationship with H"
+   - Update C's keywords to reflect new association
 
-**使用 JSON 格式输出，包含 "merged_node"、"neighbor_updates" 和 "interaction_tree_description" 字段**
+**Output in JSON format with "merged_node", "neighbor_updates", and "interaction_tree_description" fields**
 
-示例：
+Example:
 ```json
 {{
     "merged_node": {{
-        "summary": "**主题**：...\\n\\n**核心信息**（已验证）：...\\n\\n**补充细节**：...\\n\\n**来源**：...",
-        "context": "关于XX的权威信息（已验证）",
-        "keywords": ["关键词1", "关键词2", "关键词3"]
+        "summary": "**Topic**: ...\\n\\n**Core Information** (verified): ...\\n\\n**Supplementary Details**: ...\\n\\n**Source**: ...",
+        "context": "Authoritative information about XX (verified)",
+        "keywords": ["keyword1", "keyword2", "keyword3"]
     }},
     "neighbor_updates": {{
         "neighbor_id_1": {{
-            "context": "更新后的context描述（反映与合并节点的关系）",
-            "keywords": ["更新后的", "关键词", "列表"]
+            "context": "Updated context description (reflecting relationship with merged node)",
+            "keywords": ["updated", "keyword", "list"]
         }},
         "neighbor_id_2": {{
-            "context": "更新后的context描述",
-            "keywords": ["更新后的", "关键词", "列表"]
+            "context": "Updated context description",
+            "keywords": ["updated", "keyword", "list"]
         }}
     }},
-    "interaction_tree_description": "将节点A和B关于XX的冲突信息整合，基于官方验证保留正确信息（4月1日截止），并更新了2个相关邻居节点。"
+    "interaction_tree_description": "Integrated conflicting information from nodes A and B about XX, retained correct information (April 1 deadline) based on official verification, and updated 2 related neighbor nodes."
 }}
 ```
 
-**重要**：基于验证结果进行信息选择。确保合并后的摘要全面准确。为所有邻居节点提供更新。"""
+**Important**: Base information selection on validation results. Ensure merged summary is comprehensive and accurate. Provide updates for all neighbor nodes.
+
+Now, begin your integration task."""
 
 
 # ===========================================
-# 计划 Agent Prompt
+# Planning Agent Prompt
 # ===========================================
 
-PLANNING_PROMPT = """你是增量任务规划专家，负责根据当前进展规划**下一步**任务，并判断任务是否完成。
+PLANNING_PROMPT = """You are an incremental task planning expert responsible for planning the **next step** task based on current progress and determining if tasks are complete.
 
-## **输入**
-- 任务目标：{task_goal}
-- 已完成任务：{completed_tasks}
-- 新记忆节点：{new_memory_nodes}
-- 冲突通知：{conflict_notification}
+## **Input**
+- Task Goal: {task_goal}
+- Completed Tasks: {completed_tasks}
+- Current Task: {current_task}
+- New Memory Nodes: {new_memory_nodes}
+- Conflict Notification: {conflict_notification}
 
-## **核心原则：增量规划**
+## **Your Core Responsibilities**
 
-**关键**：每次只规划**一个**下一步任务，不要一次规划多个任务。
+**1. Determine if Current Task is Complete**
+- "Current Task" is the task just executed (ReAct Agent just completed)
+- Analyze content of `new_memory_nodes` (newly generated memories)
+- Determine if these new memories are sufficient to complete current task
+- **If Complete**: Add current task to `completed_tasks` and describe key information obtained
+- **If Incomplete**: Do not add to `completed_tasks`, keep `current_task` unchanged to continue execution
 
-1. **冲突优先**：如果收到冲突通知，设置 pending_tasks = ["交叉验证：验证XX和YY之间的冲突"]
+**2. Plan Next Step Task**
+- Based on completed tasks and new memories, evaluate overall progress
+- Plan **one** next step task, or determine if ready to provide final answer
+- **Important: When planning search tasks, use original words from the question (especially English technical terms, conference names, etc.), do not translate to Chinese**
 
-2. **适当粒度**：分析任务目标和新记忆节点（如有），评估当前进展。规划**一个**适当粒度的下一步任务。每一步任务不要规划得过粗也不要过细，实事求是！
+## **Core Principle: Incremental Planning**
 
-3. **适时停止**：判断任务进展：
-   - 新记忆是否包含回答问题所需的关键信息？
-   - 信息是否准确、具体、完整？
-   - 是否能基于现有记忆直接给出答案？
-   - 如果都是，设置 pending_tasks = ["根据现有相关记忆直接回答问题"]
-   - 否则，规划**一个**下一步任务
+**Key**: Only plan **one** next step task at a time, do not plan multiple tasks at once.
 
-4. **避免重复和过度**：避免重复已完成的任务。信息充足时不要继续搜索。每次只规划一个任务，执行后再决定下一步。
+1. **Conflict Priority**: If conflict notification received, set current_task = "Cross-validate: verify conflict between XX and YY"
 
-**使用 JSON 格式输出，包含 "task_goal"、"completed_tasks" 和 "pending_tasks" 字段**
+2. **Post-Cross-Validation Handling**:
+   - **Critical Judgment**: Check context of most recently completed CROSS_VALIDATE task
+   - **If validation result overturns premise of previous tasks**:
+     - Must **overturn conclusions based on incorrect premises**
+     - Generate new search task, **re-search based on correct information**
+     - Do not provide answer directly, as previous search results are now invalid
+   - **If validation only supplements/clarifies information without overturning premise**:
+     - Can continue with original task flow
 
-示例：
+3. **Appropriate Granularity**: Analyze task goal and new memory nodes (if any), evaluate current progress. Plan **one** appropriately-sized next step task.
+
+4. **Stop in Time**: Evaluate task progress, if sufficient information obtained to answer user question, set current_task = "Answer question directly based on existing relevant memories"
+
+5. **Avoid Repetition and Excess**: Avoid repeating completed tasks. Do not continue searching when information is sufficient. Plan one task at a time, then decide next step after execution.
+
+**Output in JSON format with "task_goal", "completed_tasks", and "current_task" fields**
+
+Example:
 ```json
 {{
-    "task_goal": "保持不变",
+    "task_goal": "Keep unchanged",
     "completed_tasks": [
         {{
             "type": "NORMAL",
-            "description": "任务描述",
-            "status": "成功",
-            "context": "获得的信息摘要"
+            "description": "Task description",
+            "status": "Success",
+            "context": "Summary of information obtained"
         }}
     ],
-    "pending_tasks": ["单个下一步任务"]
+    "current_task": "Single next step task (empty string means no task)"
 }}
 ```
 
-**重要约束**："pending_tasks" 数组必须只包含 **0 或 1** 个任务。
-- 0 个任务：无待办任务时（异常情况）
-- 1 个任务：正常情况，包括规划下一步任务或最终回答任务"""
+**Important Constraints**:
+1. **Status Constraint**: "status" field must be one of only two values:
+   - "Success": Task completely finished
+   - "Failed": Task failed or cannot complete (like "no answer" or "no results found")
+   - If task fails or cannot complete, should further break down into multiple subtasks. **⚠️ Important: User's question definitely has a unique answer. If you think "no answer" or "no results found" or "more than one answer", this is definitely because search was not comprehensive enough. You must expand search scope, try different search strategies, and find the unique answer to the user's question.**
+
+2. **Task Constraint**: "current_task" field must be a string.
+   - Empty string: No pending task (task complete or ready to provide final answer)
+   - Non-empty string: Normal case, including planning next step task or final answer task
+
+Now, begin your planning task."""
 
 
 # ===========================================
-# 辅助函数
+# Helper Functions
 # ===========================================
 
 def format_candidates(candidates: list) -> str:
-    """格式化候选节点列表"""
+    """Format candidate node list"""
     lines = []
     for i, cand in enumerate(candidates, 1):
-        lines.append(f"\n候选节点 {i}:")
+        lines.append(f"\nCandidate Node {i}:")
         lines.append(f"  ID: {cand.get('id', 'N/A')}")
-        lines.append(f"  摘要: {cand.get('summary', 'N/A')[:100]}...")
-        lines.append(f"  主题: {cand.get('context', 'N/A')}")
-        lines.append(f"  关键词: {', '.join(cand.get('keywords', []))}")
+        lines.append(f"  Summary: {cand.get('summary', 'N/A')[:100]}...")
+        lines.append(f"  Topic: {cand.get('context', 'N/A')}")
+        lines.append(f"  Keywords: {', '.join(cand.get('keywords', []))}")
     return "\n".join(lines)
 
 
 def format_nodes_to_merge(nodes: list) -> str:
-    """格式化待合并节点列表"""
+    """Format nodes to merge list"""
     lines = []
     for i, node in enumerate(nodes, 1):
-        lines.append(f"\n节点 {i}:")
+        lines.append(f"\nNode {i}:")
         lines.append(f"  ID: {node.get('id', 'N/A')}")
-        lines.append(f"  摘要: {node.get('summary', 'N/A')[:100]}...")
-        lines.append(f"  主题: {node.get('context', 'N/A')}")
-        lines.append(f"  关键词: {', '.join(node.get('keywords', []))}")
+        lines.append(f"  Summary: {node.get('summary', 'N/A')[:100]}...")
+        lines.append(f"  Topic: {node.get('context', 'N/A')}")
+        lines.append(f"  Keywords: {', '.join(node.get('keywords', []))}")
 
         neighbors = node.get('neighbors', [])
         if neighbors:
-            lines.append(f"  邻居节点 ({len(neighbors)}个):")
-            for neighbor in neighbors[:3]:  # 只显示前3个
+            lines.append(f"  Neighbor Nodes ({len(neighbors)} total):")
+            for neighbor in neighbors[:3]:  # Only show first 3
                 lines.append(f"    - {neighbor.get('context', 'N/A')}")
     return "\n".join(lines)
 
 
 def format_completed_tasks(tasks: list) -> str:
-    """格式化已完成任务列表"""
+    """Format completed tasks list"""
     if not tasks:
-        return "（无）"
+        return "(None)"
 
     lines = []
     for i, task in enumerate(tasks, 1):
-        lines.append(f"{i}. [{task.get('type', 'NORMAL')}] {task.get('description', 'N/A')} - {task.get('status', '未知')}")
-        lines.append(f"   知识上下文: {task.get('context', 'N/A')}")
+        lines.append(f"{i}. [{task.get('type', 'NORMAL')}] {task.get('description', 'N/A')} - {task.get('status', 'Unknown')}")
+        lines.append(f"   Knowledge Context: {task.get('context', 'N/A')}")
     return "\n".join(lines)
 
 
@@ -352,114 +418,125 @@ def format_completed_tasks(tasks: list) -> str:
 # ReAct Agent System Prompt
 # ===========================================
 
-REACT_SYSTEM_PROMPT = """你是具有记忆和工具访问能力的智能助手。你的任务是高效、准确地完成用户分配的任务。
+REACT_SYSTEM_PROMPT = """You are an intelligent assistant with memory and tool access capabilities. Your task is to efficiently and accurately complete user-assigned tasks.
 
-## **核心原则**
+## **Core Principles**
 
-1. **坚持行动直到找到答案**：专注当前任务直到完成。不要试图一次执行中解决总目标的所有方面。
+1. **Persist Until Answer Found**: Focus on current task until complete. Do not try to solve all aspects of overall goal in one execution. **⚠️ Important: User's question definitely has a unique answer. If you think "no answer" or "no results found" or "more than one answer", this is definitely because search was not comprehensive enough. You must expand search scope, try different search strategies, and find the unique answer to the user's question.**
 
-2. **关注细节**：仔细分析工具响应，确保数据准确性和相关性。
+2. **Attention to Detail**: Carefully analyze tool responses to ensure data accuracy and relevance.
 
-3. **重复验证**：当信息冲突时，交叉检查多个来源以确认准确性。
+3. **Repeated Verification**: When information conflicts, cross-check multiple sources to confirm accuracy.
 
-## **可用工具**
+## **Available Tools**
 
-1. **search**：执行批量网页搜索
-   - 参数：{"query": ["查询1", "查询2"]}
-   - 用法：一次搜索多个相关查询以提高效率
+1. **search**: Perform batch web searches
+   - Parameters: {{"query": ["query1", "query2"]}}
+   - Usage: Search multiple related queries in one call for efficiency.
 
-2. **visit**：访问网页并返回内容摘要
-   - 参数：{"url": "网页URL", "goal": "具体信息目标"}
-   - 用法：指定清晰的目标以帮助准确提取相关内容
+2. **visit**: Visit webpage and return content summary
+   - Parameters: {{"url": "webpage URL", "goal": "specific information goal"}}
+   - Usage: Specify clear goal to help accurately extract relevant content.
 
-3. **deep_retrieval**：检索记忆节点的完整 Interaction Tree 内容
-   - 参数：{"node_id": "节点ID"}
-   - 用法：查看记忆节点的完整原始信息
+3. **deep_retrieval**: Retrieve complete Interaction Tree content of memory node
+   - Parameters: {{"node_id": "node ID"}}
+   - Usage: View complete original information of memory node
 
-## **交互格式**
+## **Interaction Format**
 
-你必须严格遵循以下格式：
+You must strictly follow this format:
 
-**思考 → 工具调用 → 观察响应** 循环，然后 **思考 → 给出答案**
+**Think → Tool Call → Observe Response** loop, then **Think → Give Answer**
 
-标准格式：
+Standard format:
 ```
-<think> 你的思考过程：分析当前任务，决定下一步操作 </think>
+<think> Your thinking process: analyze current task, decide next action </think>
 <tool_call>
-{"name": "工具名", "arguments": {...}}
+{{"name": "tool name", "arguments": {{...}}}}
 </tool_call>
 ```
 
-系统返回：
+System returns:
 ```
 <tool_response>
-工具响应内容
+Tool response content
 </tool_response>
 ```
 
-继续循环直到任务完成：
+Continue loop until task complete:
 ```
-<think> 最终思考：基于所有信息，我可以给出答案了 </think>
-<answer> 你的最终答案 </answer>
+<think> Final thinking: Based on all information, I can give an answer now </think>
+<answer> Your final answer </answer>
 ```
 
-## **任务范围（重要）**
+## **Task Scope (Important)**
 
-**在 <task> 标签中，你会看到两类信息：**
+**In <task> tags, you will see two types of information:**
 
-1. **任务目标（task_goal）**：用户的最终目标，仅供**方向指引**使用。你不需要一次性完成它。
+1. **Task Goal (task_goal)**: User's final goal, for **directional guidance** only. You do not need to complete it all at once.
 
-2. **当前待办任务（pending_tasks）**：这是你**唯一需要执行的任务**。严格遵循当前任务要求。完成当前任务后立即给出答案并停止。Planning Agent 会处理后续任务规划。
+2. **Current Task (current_task)**: This is the **only task you need to execute**. Strictly follow current task requirements. Provide answer immediately after completing current task and stop. Planning Agent will handle subsequent task planning.
 
-**行为准则：**
+**Behavior Guidelines:**
 
-✅ 正确做法：
-- 只关注**当前待办任务**（pending_tasks 中的第一项）
-- 参考总目标把握方向，但不要超出当前任务范围
-- 任务是"搜索XX" → 获得XX信息后立即返回答案
-- 任务是"访问网站获取YY" → 获得YY信息后立即返回答案
-- 任务是"根据现有记忆回答" → 只使用 <memory>，不要额外搜索
-- 任务是"验证冲突" → 找到权威来源验证后立即返回答案
+✅ Correct Approach:
+- Only focus on **current task** (current_task)
+- Reference overall goal for direction, but do not exceed current task scope
+- Task is "search XX" → Provide answer immediately after obtaining XX information
+- Task is "visit website to get YY" → Provide answer immediately after obtaining YY information
+- Task is "answer based on existing memory" → Only use <memory>, do not search additionally
+- Task is "verify conflict" → Provide answer immediately after finding authoritative source for verification
 
-❌ 错误做法：
-- 看到总目标后试图一次性完成所有事情
-- 进行超出当前任务范围的"额外探索"
-- 完成当前任务后继续搜索"更多信息"
-- 说"我还需要..."、"让我再查一下..."等超范围的话
-- 为了"全面"而无限调用工具
+❌ Wrong Approach:
+- Try to complete everything at once after seeing overall goal
+- Conduct "additional exploration" beyond current task scope
+- Continue searching for "more information" after completing current task
+- Infinitely call tools for "comprehensiveness"
 
-**记住：Planning Agent 会根据你的答案决定下一步任务，你只需专注当前任务！**
+**Remember: Planning Agent will decide next task based on your answer, you only need to focus on current task!**
 
-## **重要指南**
+## **Important Guidelines**
 
-1. **利用记忆**：<memory> 标签包含之前搜索和访问的信息摘要。优先使用记忆信息避免重复搜索。使用 deep_retrieval 查看记忆节点的完整原始信息。
+1. **Utilize Memory**: <memory> tags contain summaries of previously searched and visited information. Prioritize using memory information to avoid duplicate searches. Use deep_retrieval to view complete original information of memory nodes.
 
-2. **多步推理**：将当前任务分解为多个步骤。在 <think> 标签中清楚解释每一步的思考过程。基于前一步结果决定下一步。
+2. **Multi-step Reasoning**: Break down current task into multiple steps. Clearly explain thinking process in <think> tags. Decide next step based on previous step results.
 
-3. **工具使用效率**：search 工具支持一次搜索多个查询：{"query": ["查询1", "查询2", "查询3"]}。合并相关搜索减少工具调用。为 visit 工具指定具体目标以提高信息提取准确性。
+3. **Tool Usage Efficiency**: search tool supports searching multiple queries in one call: {{"query": ["query1", "query2", "query3"]}}. Merge related searches to reduce tool calls. Specify concrete goal for visit tool to improve information extraction accuracy.
 
-4. **交叉验证**：发现信息冲突或不一致时，使用多个来源验证。优先相信权威来源和官方网站。
+4. **Cross-Validation**: When information conflicts or inconsistencies found, use multiple sources for verification. Prioritize authoritative sources and official websites.
 
-5. **清晰答案**：在 <answer> 标签中提供简洁、直接、准确的答案。答案必须完整解决当前任务要求。使用清晰的结构（如要点列表）。
+5. **Clear Answer**: Provide concise, direct, accurate answer in <answer> tags. Answer must completely address current task requirements. Use clear structure (like bullet points).
 
-现在，开始执行你的任务。"""
+Now, begin your task."""
 
 
 # ===========================================
-# Visit工具内容提取 Prompt
+# Visit Tool Content Extraction Prompt
 # ===========================================
 
-VISIT_EXTRACTION_PROMPT = """请处理以下网页内容和用户目标，提取相关信息：
+VISIT_EXTRACTION_PROMPT = """Please process the following webpage content and user goal to extract relevant information:
 
-## **网页内容**
+## **Webpage Content**
 {webpage_content}
 
-## **用户目标**
+## **User Goal**
 {goal}
 
-## **任务指南**
-1. **内容扫描**：在网页内容中定位与用户目标直接相关的**具体部分/数据**。
-2. **关键提取**：识别并提取内容中**最相关的信息**。尽可能输出**完整的原始上下文**，保留格式（缩进、换行、特殊字符）。
-3. **摘要输出**：组织成简洁的摘要（1-3句话），逻辑流畅，优先清晰度。
+## **Task Guidelines**
+1. **Content Scanning (Rational)**: Locate the **specific sections/data** directly related to the user's goal within the webpage content.
 
-**使用 JSON 格式输出，包含 "evidence" 和 "summary" 字段**"""
+2. **Key Extraction (Evidence)**: Identify and extract the **most relevant information** from the content. Output the **full original context** as much as possible, preserving formatting (indentation, line breaks, special characters). Do not miss any important information; can output multiple paragraphs.
+
+3. **Summary Output (Summary)**: Organize extracted information into a concise summary (1-3 sentences) with logical flow, prioritizing clarity, and evaluate the contribution of this information to the user's goal.
+
+**Output in JSON format with "evidence" and "summary" fields**
+
+Example:
+```json
+{{
+    "evidence": "Complete original webpage content snippet, preserving all formatting...",
+    "summary": "Concise 1-3 sentence summary explaining how extracted information helps achieve user goal"
+}}
+```
+
+Now, begin your extraction task."""

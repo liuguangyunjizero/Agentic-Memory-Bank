@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 class ClassificationInput:
     """分类 Agent 输入"""
     context: str  # 长上下文文本（可能超长）
-    task_goal: Optional[str] = None  # 可选，辅助分类决策
+    task_goal: Optional[str] = None  # 总任务目标（参考）
+    current_task: Optional[str] = None  # 当前子任务（参考，帮助识别重要信息）
 
 
 @dataclass
@@ -46,7 +47,8 @@ class ClassificationAgent(BaseAgent):
     处理超长文本时使用分块策略
     """
 
-    def __init__(self, llm_client, window_size: int = 8000, chunk_ratio: float = 0.9):
+    def __init__(self, llm_client, window_size: int = 8000, chunk_ratio: float = 0.9,
+                 temperature: float = 0.4, top_p: float = 0.9):
         """
         初始化分类 Agent
 
@@ -54,11 +56,16 @@ class ClassificationAgent(BaseAgent):
             llm_client: LLMClient 实例
             window_size: Agent 窗口大小（token）
             chunk_ratio: 分块比例（留余量）
+            temperature: 温度参数
+            top_p: 采样参数
         """
         super().__init__(llm_client)
         self.window_size = window_size
         self.chunk_ratio = chunk_ratio
-        logger.info(f"分类Agent初始化: window_size={window_size}, chunk_ratio={chunk_ratio}")
+        self.temperature = temperature
+        self.top_p = top_p
+        logger.info(f"分类Agent初始化: window_size={window_size}, chunk_ratio={chunk_ratio}, "
+                   f"temp={temperature}, top_p={top_p}")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "ClassificationAgent":
@@ -66,7 +73,9 @@ class ClassificationAgent(BaseAgent):
         return cls(
             llm_client=llm_client,
             window_size=config.CLASSIFICATION_AGENT_WINDOW,
-            chunk_ratio=config.CHUNK_RATIO
+            chunk_ratio=config.CHUNK_RATIO,
+            temperature=config.CLASSIFICATION_AGENT_TEMPERATURE,
+            top_p=config.CLASSIFICATION_AGENT_TOP_P
         )
 
     def run(self, input_data: ClassificationInput) -> ClassificationOutput:
@@ -100,12 +109,18 @@ class ClassificationAgent(BaseAgent):
         Returns:
             ClassificationOutput 实例
         """
-        prompt = self._build_prompt(input_data.context, input_data.task_goal)
+        prompt = self._build_prompt(input_data.context, input_data.task_goal, input_data.current_task)
 
-        logger.debug("调用LLM进行分类...")
-        response = self._call_llm(prompt)
+        logger.debug(f"调用LLM进行分类 (temp={self.temperature}, top_p={self.top_p})...")
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
 
-        return self._parse_response(response)
+        # 记录LLM原始响应
+        logger.debug("="*80)
+        logger.debug("📤 Classification Agent LLM原始响应:")
+        logger.debug(response)
+        logger.debug("="*80)
+
+        return self._parse_response(response, input_data)
 
     def _classify_multiple_chunks(self, input_data: ClassificationInput) -> ClassificationOutput:
         """
@@ -134,56 +149,110 @@ class ClassificationAgent(BaseAgent):
 
         return ClassificationOutput(should_cluster=True, clusters=all_clusters)
 
-    def _build_prompt(self, context: str, task_goal: Optional[str]) -> str:
+    def _build_prompt(self, context: str, task_goal: Optional[str], current_task: Optional[str]) -> str:
         """
         构建 prompt
 
         Args:
             context: 上下文内容
-            task_goal: 任务目标（可选）
+            task_goal: 总任务目标（可选）
+            current_task: 当前子任务（可选）
 
         Returns:
             完整 prompt
         """
         return CLASSIFICATION_PROMPT.format(
             task_goal=task_goal or "（无）",
+            current_task=current_task or "（无）",
             context=context
         )
 
-    def _parse_response(self, response: str) -> ClassificationOutput:
+    def _parse_response(self, response: str, input_data: ClassificationInput = None) -> ClassificationOutput:
         """
-        解析 LLM 响应
+        解析 LLM 响应（简单分隔符格式，非JSON）
 
         Args:
             response: LLM 响应字符串
+            input_data: ClassificationInput 实例（用于填充content）
 
         Returns:
             ClassificationOutput 实例
         """
         try:
-            data = self._parse_json_response(response)
+            # 解析 SHOULD_CLUSTER
+            should_cluster = False
+            if "SHOULD_CLUSTER:" in response:
+                should_cluster_line = [line for line in response.split('\n') if 'SHOULD_CLUSTER:' in line][0]
+                should_cluster = 'true' in should_cluster_line.lower()
+
+            # 按 === CLUSTER 分隔符拆分
+            cluster_blocks = response.split('=== CLUSTER')[1:]  # 跳过第一部分（SHOULD_CLUSTER行）
 
             clusters = []
-            for i, cluster_data in enumerate(data.get("clusters", []), 1):
-                cluster = Cluster(
-                    cluster_id=cluster_data.get("cluster_id", f"c{i}"),
-                    context=cluster_data.get("context", ""),
-                    content=cluster_data.get("content", ""),
-                    keywords=cluster_data.get("keywords", [])
-                )
-                clusters.append(cluster)
+            for i, block in enumerate(cluster_blocks, 1):
+                try:
+                    # 提取cluster_id（从 "c1 ===" 或 "c2 ===" 中提取）
+                    cluster_id_match = block.split('===')[0].strip()
+                    cluster_id = cluster_id_match if cluster_id_match else f"c{i}"
 
-            return ClassificationOutput(
-                should_cluster=data.get("should_cluster", False),
-                clusters=clusters
-            )
+                    # 提取 CONTEXT
+                    context = ""
+                    if "CONTEXT:" in block:
+                        context_line = [line for line in block.split('\n') if line.strip().startswith('CONTEXT:')][0]
+                        context = context_line.split('CONTEXT:', 1)[1].strip()
+
+                    # 提取 KEYWORDS
+                    keywords = []
+                    if "KEYWORDS:" in block:
+                        keywords_line = [line for line in block.split('\n') if line.strip().startswith('KEYWORDS:')][0]
+                        keywords_str = keywords_line.split('KEYWORDS:', 1)[1].strip()
+                        keywords = [kw.strip() for kw in keywords_str.split(',')]
+
+                    # ✅ 修复：直接使用原始输入作为content，而不是让LLM复制
+                    # 避免浪费token和LLM可能的复制错误
+                    content = input_data.context if input_data else ""
+
+                    if not content:
+                        logger.warning(f"cluster {i} 缺少content（input_data为空），使用空字符串")
+
+                    # 创建 Cluster 对象
+                    cluster = Cluster(
+                        cluster_id=cluster_id,
+                        context=context,
+                        content=content,
+                        keywords=keywords
+                    )
+                    clusters.append(cluster)
+
+                except Exception as e:
+                    logger.warning(f"解析cluster块 {i} 失败: {str(e)}, 跳过该块")
+                    continue
+
+            # 如果成功解析到cluster，返回结果
+            if clusters:
+                return ClassificationOutput(
+                    should_cluster=should_cluster,
+                    clusters=clusters
+                )
+            else:
+                raise ValueError("未能解析出任何cluster")
 
         except Exception as e:
             logger.error(f"解析分类响应失败: {str(e)}")
-            # 返回默认聚类，从input context提取关键词作为fallback
+            logger.debug(f"响应内容（前1000字符）: {response[:1000]}")
+
+            # Fallback: 返回默认单一cluster
             import re
+
+            # 如果有input_data，从原始context中提取关键词
+            if input_data and input_data.context:
+                context_preview = input_data.context[:100] + "..." if len(input_data.context) > 100 else input_data.context
+                content_fallback = input_data.context
+            else:
+                context_preview = "解析失败的默认分类"
+                content_fallback = response[:500]
+
             # 从原始context中提取中文词组和英文单词作为关键词
-            context_preview = input_data.context[:500]
             words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]{3,}', context_preview)
             fallback_keywords = list(set(words[:5])) if words else ["默认分类"]
 
@@ -191,8 +260,8 @@ class ClassificationAgent(BaseAgent):
                 should_cluster=False,
                 clusters=[Cluster(
                     cluster_id="c1",
-                    context="解析失败的默认分类",
-                    content=input_data.context[:500],
+                    context=context_preview,
+                    content=content_fallback,
                     keywords=fallback_keywords
                 )]
             )

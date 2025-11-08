@@ -94,7 +94,7 @@ class MemoryBank:
 
         self.search_tool = SearchTool(search_api_key=search_api_key)
 
-        # Visit工具：如果配置了Jina API key，使用Jina Reader；否则使用BeautifulSoup
+        # Visit工具：使用Jina Reader API（必需）
         jina_api_key = self.config.JINA_API_KEY
         self.visit_tool = VisitTool(
             llm_client=self.llm_client,
@@ -115,7 +115,9 @@ class MemoryBank:
             tools=tools,
             system_message=REACT_SYSTEM_PROMPT,
             max_iterations=self.config.MAX_LLM_CALL_PER_RUN,
-            max_context_tokens=self.config.MAX_CONTEXT_TOKENS
+            max_context_tokens=self.config.MAX_CONTEXT_TOKENS,
+            temperature=self.config.REACT_AGENT_TEMPERATURE,
+            top_p=self.config.REACT_AGENT_TOP_P
         )
 
         logger.info("Agentic Memory Bank初始化完成")
@@ -135,7 +137,7 @@ class MemoryBank:
             }
         """
         logger.info("=" * 60)
-        logger.info(f"开始新任务: {user_input[:100]}...")
+        logger.info(f"开始新任务: {user_input[:300]}{'...' if len(user_input) > 300 else ''}")
         logger.info("=" * 60)
 
         try:
@@ -149,7 +151,7 @@ class MemoryBank:
             # 显示任务目标和初始状态
             if self.insight_doc:
                 print(f"\n📋 任务目标: {self.insight_doc.task_goal}")
-                print(f"📝 待办任务: {self.insight_doc.pending_tasks}")
+                print(f"📝 当前任务: {self.insight_doc.current_task if self.insight_doc.current_task else '（无）'}")
                 print("=" * 70)
 
             # 2. 执行循环
@@ -165,8 +167,8 @@ class MemoryBank:
 
                 # 显示当前任务状态
                 if self.insight_doc:
-                    if self.insight_doc.pending_tasks:
-                        print(f"⏳ 当前任务: {self.insight_doc.pending_tasks[0]}")
+                    if self.insight_doc.current_task:
+                        print(f"⏳ 当前任务: {self.insight_doc.current_task}")
                     print(f"✅ 已完成: {len(self.insight_doc.completed_tasks)} 个任务")
                     print(f"📊 记忆节点: {self.query_graph.get_node_count()} 个")
 
@@ -179,10 +181,10 @@ class MemoryBank:
 
                 # 2.2 上下文拦截：提取搜索结果并转化为记忆
                 # 检查是否是最终回答任务
-                current_task = self.insight_doc.pending_tasks[0] if self.insight_doc and self.insight_doc.pending_tasks else ""
+                current_task = self.insight_doc.current_task if self.insight_doc else ""
                 is_final_answer_task = "根据现有相关记忆直接回答问题" in current_task or "根据现有记忆回答问题" in current_task
 
-                if self.insight_doc and self.insight_doc.pending_tasks:
+                if self.insight_doc and self.insight_doc.current_task:
                     # 检查是否有工具调用（通过检查消息历史）
                     messages = react_result.get("messages", [])
                     has_tool_calls = any(
@@ -198,6 +200,7 @@ class MemoryBank:
                         logger.info(f"开始整理记忆：提取完整上下文并转化为记忆节点")
 
                         # 提取完整上下文（包括思考过程、工具调用和工具响应）
+                        # Classification Agent 需要完整上下文来准确分类和理解推理过程
                         full_context = self._extract_full_context(messages)
                         logger.debug(f"完整上下文长度: {len(full_context)} 字符")
 
@@ -216,7 +219,7 @@ class MemoryBank:
                             self.adapter.intercept_context(full_context, task_type, self.insight_doc)
 
                             print(f"✅ 记忆处理完成")
-                            logger.info(f"记忆处理完成，待办任务={len(self.insight_doc.pending_tasks)}")
+                            logger.info(f"记忆处理完成，当前任务={self.insight_doc.current_task}")
 
                         except Exception as e:
                             print(f"❌ 错误: {str(e)}")
@@ -230,8 +233,8 @@ class MemoryBank:
                         print("\n✅ 获得最终答案，任务完成！")
                         logger.info(f"最终答案任务完成: {answer[:100]}...")
 
-                        # 标记任务完成，清空pending_tasks
-                        self.insight_doc.pending_tasks = []
+                        # 标记任务完成，清空current_task
+                        self.insight_doc.current_task = ""
                         completed_task = CompletedTask(
                             type=TaskType.NORMAL,
                             description=current_task,
@@ -246,12 +249,12 @@ class MemoryBank:
                         print("\n💡 ReAct直接回答了问题（未调用工具）")
                         logger.info("ReAct直接回答，未调用工具")
 
-                        if self.insight_doc.pending_tasks:
+                        if self.insight_doc.current_task:
                             # 保存答案到外层变量（从prediction字段获取）
                             answer = react_result.get("prediction", "")
 
                             # 标记任务完成
-                            self.insight_doc.pending_tasks.remove(current_task)
+                            self.insight_doc.current_task = ""
                             completed_task = CompletedTask(
                                 type=TaskType.NORMAL,
                                 description=current_task,
@@ -277,24 +280,24 @@ class MemoryBank:
                             ))
 
                             # 更新insight_doc
-                            self.insight_doc.pending_tasks = planning_output.pending_tasks
-                            logger.info(f"Planning Agent更新: 待办任务={len(self.insight_doc.pending_tasks)}")
+                            self.insight_doc.current_task = planning_output.current_task
+                            logger.info(f"Planning Agent更新: 当前任务={self.insight_doc.current_task}")
 
                 # 2.3 检查是否有待办任务（如果没有，说明任务完成）
-                if not self.insight_doc or not self.insight_doc.pending_tasks:
+                if not self.insight_doc or not self.insight_doc.current_task:
                     print("\n🎉 所有任务完成！")
                     logger.info("任务完成（无待办任务）")
                     break
 
                 # 2.4 如果ReAct已经给出答案且无更多待办任务，结束
-                if react_result.get("termination") == "answer" and not self.insight_doc.pending_tasks:
+                if react_result.get("termination") == "answer" and not self.insight_doc.current_task:
                     print("\n🎉 ReAct Agent已给出答案，任务完成！")
                     break
 
                 # 2.5 增强下一轮Prompt（基于新的任务状态）
                 print(f"\n🔄 准备下一轮执行...")
-                if self.insight_doc.pending_tasks:
-                    print(f"📋 下一步任务: {self.insight_doc.pending_tasks[0]}")
+                if self.insight_doc.current_task:
+                    print(f"📋 下一步任务: {self.insight_doc.current_task}")
                 enhanced_prompt = self.adapter.enhance_prompt(self.insight_doc)
 
             # 3. 统计信息
@@ -306,7 +309,7 @@ class MemoryBank:
                 "graph_edges": self.query_graph.get_edge_count(),
                 "tree_entries": self.interaction_tree.get_total_entries(),
                 "completed_tasks": len(self.insight_doc.completed_tasks) if self.insight_doc else 0,
-                "pending_tasks": len(self.insight_doc.pending_tasks) if self.insight_doc else 0
+                "current_task": self.insight_doc.current_task if self.insight_doc else ""
             }
 
             logger.info("\n" + "=" * 60)
@@ -360,7 +363,7 @@ class MemoryBank:
         text_context, question = self._parse_user_input(user_input)
         doc_id = str(uuid.uuid4())
 
-        logger.info(f"解析结果: 上下文长度={len(text_context)}, 问题={question[:50]}...")
+        logger.info(f"解析结果: 上下文长度={len(text_context)}, 问题={question[:200]}{'...' if len(question) > 200 else ''}")
 
         # 2. 判断是否有文本上下文
         if not text_context:
@@ -370,7 +373,7 @@ class MemoryBank:
                 doc_id=doc_id,
                 task_goal=question,
                 completed_tasks=[],
-                pending_tasks=[]
+                current_task=""
             )
             planning_output = self.planning_agent.run(PlanningInput(
                 insight_doc=self.insight_doc
@@ -379,7 +382,7 @@ class MemoryBank:
                 doc_id=doc_id,
                 task_goal=planning_output.task_goal,
                 completed_tasks=planning_output.completed_tasks,
-                pending_tasks=planning_output.pending_tasks
+                current_task=planning_output.current_task
             )
             return self.adapter.enhance_prompt(self.insight_doc)
 
@@ -460,7 +463,7 @@ class MemoryBank:
                             "node2": rel.existing_node_id,
                             "description": rel.conflict_description
                         })
-                        logger.info(f"    ⚠️  检测到冲突: {rel.conflict_description[:50]}...")
+                        logger.info(f"    ⚠️  检测到冲突: {rel.conflict_description[:150]}{'...' if len(rel.conflict_description or '') > 150 else ''}")
                     elif rel.relationship == "related":
                         self.graph_ops.add_edge(node.id, rel.existing_node_id)
                         logger.debug(f"    建立关联边: {node.id[:8]}... <-> {rel.existing_node_id[:8]}...")
@@ -498,13 +501,9 @@ class MemoryBank:
             logger.info(f"  ⚠️  检测到冲突，需要交叉验证")
 
         print(f"\n📅 调用 Planning Agent - 规划下一步任务...")
+        # ✅ 修复：传入当前的 insight_doc（包含已完成的任务），而不是空的 InsightDoc
         planning_output = self.planning_agent.run(PlanningInput(
-            insight_doc=InsightDoc(
-                doc_id=doc_id,
-                task_goal=question,
-                completed_tasks=[],
-                pending_tasks=[]
-            ),
+            insight_doc=self.insight_doc,
             new_memory_nodes=[
                 {
                     "id": node.id,
@@ -516,16 +515,16 @@ class MemoryBank:
             ],
             conflict_notification=conflict_notification
         ))
-        print(f"   ✅ 规划完成: {len(planning_output.pending_tasks)} 个待办任务")
+        print(f"   ✅ 规划完成: 当前任务={'有' if planning_output.current_task else '无'}")
 
         self.insight_doc = InsightDoc(
             doc_id=doc_id,
             task_goal=planning_output.task_goal,
             completed_tasks=planning_output.completed_tasks,
-            pending_tasks=planning_output.pending_tasks
+            current_task=planning_output.current_task
         )
 
-        logger.info(f"规划完成: 待办任务={len(self.insight_doc.pending_tasks)}")
+        logger.info(f"规划完成: 当前任务={self.insight_doc.current_task}")
 
         # 11. 增强Prompt
         return self.adapter.enhance_prompt(self.insight_doc)
@@ -629,12 +628,13 @@ class MemoryBank:
 
     def _extract_full_context(self, messages: List[Dict[str, str]]) -> str:
         """
-        从ReAct消息历史中提取完整上下文（包括思考、工具调用和响应）
+        从ReAct消息历史中提取完整上下文（包括思考、工具调用、响应和答案）
 
         这个方法提取：
-        1. ReAct Agent的思考过程（<think>标签）
-        2. 工具调用和参数
-        3. 工具响应结果
+        1. ReAct Agent的完整响应（保留<think>、<tool_call>、<answer>等所有标签）
+        2. 工具响应结果（保留<tool_response>标签）
+
+        重要：保持原始标签格式，不做任何转换！
 
         Args:
             messages: ReAct消息历史
@@ -649,38 +649,15 @@ class MemoryBank:
             content = message.get("content", "")
 
             if role == "assistant":
-                # 提取思考过程
-                if '<think>' in content and '</think>' in content:
-                    try:
-                        think_text = content.split('<think>')[1].split('</think>')[0].strip()
-                        if think_text:
-                            context_parts.append(f"【分析过程】\n{think_text}")
-                    except Exception as e:
-                        logger.warning(f"解析思考内容失败: {str(e)}")
-
-                # ✅ 修复：提取工具调用参数（包含重要语义信息）
-                if '<tool_call>' in content and '</tool_call>' in content:
-                    try:
-                        tool_call_text = content.split('<tool_call>')[1].split('</tool_call>')[0].strip()
-                        if tool_call_text:
-                            # 解析JSON并格式化
-                            import json
-                            tool_call_json = json.loads(tool_call_text)
-                            tool_name = tool_call_json.get('name', '')
-                            tool_args = tool_call_json.get('arguments', {})
-                            context_parts.append(f"【工具调用】\n工具: {tool_name}\n参数: {json.dumps(tool_args, ensure_ascii=False)}")
-                    except Exception as e:
-                        logger.warning(f"解析工具调用失败: {str(e)}")
+                # ✅ 修复：直接保留完整的assistant响应，不做任何转换
+                # 包含<think>、<tool_call>、<answer>等所有标签
+                if content.strip():
+                    context_parts.append(content.strip())
 
             elif role == "user":
-                # 提取工具响应
+                # 提取工具响应（保留<tool_response>标签）
                 if '<tool_response>' in content and '</tool_response>' in content:
-                    try:
-                        response_text = content.split('<tool_response>')[1].split('</tool_response>')[0].strip()
-                        if response_text:
-                            context_parts.append(f"【工具输出】\n{response_text}")
-                    except Exception as e:
-                        logger.warning(f"解析工具响应失败: {str(e)}")
+                    context_parts.append(content.strip())
 
         full_context = "\n\n".join(context_parts)
         logger.debug(f"提取完整上下文: {len(context_parts)} 个部分，总长度 {len(full_context)} 字符")
@@ -698,7 +675,7 @@ class MemoryBank:
             return False
 
         # 如果没有待办任务且所有已完成任务都成功，则终止
-        no_pending = len(self.insight_doc.pending_tasks) == 0
+        no_pending = not self.insight_doc.current_task
         all_success = all(
             task.status == "成功"
             for task in self.insight_doc.completed_tasks

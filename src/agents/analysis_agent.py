@@ -65,20 +65,28 @@ class AnalysisAgent(BaseAgent):
     判断优先级：conflict > related > unrelated
     """
 
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, temperature: float = 0.4, top_p: float = 0.9):
         """
         初始化分析 Agent
 
         Args:
             llm_client: LLMClient 实例
+            temperature: 温度参数
+            top_p: 采样参数
         """
         super().__init__(llm_client)
-        logger.info("记忆分析Agent初始化完成")
+        self.temperature = temperature
+        self.top_p = top_p
+        logger.info(f"记忆分析Agent初始化完成 (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "AnalysisAgent":
         """从配置创建Agent"""
-        return cls(llm_client=llm_client)
+        return cls(
+            llm_client=llm_client,
+            temperature=config.ANALYSIS_AGENT_TEMPERATURE,
+            top_p=config.ANALYSIS_AGENT_TOP_P
+        )
 
     def run(self, input_data: AnalysisInput) -> AnalysisOutput:
         """
@@ -96,8 +104,15 @@ class AnalysisAgent(BaseAgent):
 
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM分析 {len(input_data.candidate_nodes)} 个候选节点的关系...")
-        response = self._call_llm(prompt)
+        logger.debug(f"调用LLM分析 {len(input_data.candidate_nodes)} 个候选节点的关系 "
+                    f"(temp={self.temperature}, top_p={self.top_p})...")
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+
+        # 记录LLM原始响应
+        logger.debug("="*80)
+        logger.debug("📤 Analysis Agent LLM原始响应:")
+        logger.debug(response)
+        logger.debug("="*80)
 
         return self._parse_response(response)
 

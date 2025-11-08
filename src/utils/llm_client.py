@@ -135,9 +135,12 @@ class LLMClient:
         # 重试循环
         for attempt in range(self.max_retries):
             try:
+                msg_count = len(messages)
+                total_chars = sum(len(msg.get("content", "")) for msg in messages if isinstance(msg, dict))
                 logger.debug(
-                    f"LLM 调用 (attempt {attempt + 1}/{self.max_retries}): "
-                    f"messages_count={len(messages)}"
+                    f"LLM 调用 (尝试 {attempt + 1}/{self.max_retries}): "
+                    f"消息数={msg_count}, 总字符数={total_chars}, "
+                    f"temp={temperature}, top_p={top_p}"
                 )
 
                 response = self.client.chat.completions.create(
@@ -153,14 +156,14 @@ class LLMClient:
                 content = response.choices[0].message.content
 
                 if content:
-                    logger.debug(f"LLM 响应成功，长度: {len(content)}")
+                    logger.debug(f"LLM 响应成功: 长度={len(content)} 字符")
                     return content
                 else:
-                    logger.warning(f"LLM 返回空响应 (attempt {attempt + 1})")
+                    logger.warning(f"LLM 返回空响应 (尝试 {attempt + 1})")
 
             except Exception as e:
                 logger.error(
-                    f"LLM 调用失败 (attempt {attempt + 1}/{self.max_retries}): {str(e)}"
+                    f"LLM 调用失败 (尝试 {attempt + 1}/{self.max_retries}): {str(e)}"
                 )
 
                 if attempt == self.max_retries - 1:

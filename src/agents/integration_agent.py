@@ -47,20 +47,28 @@ class IntegrationAgent(BaseAgent):
     整合多个冲突节点的内容
     """
 
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, temperature: float = 0.2, top_p: float = 0.85):
         """
         初始化整合 Agent
 
         Args:
             llm_client: LLMClient 实例
+            temperature: 温度参数
+            top_p: 采样参数
         """
         super().__init__(llm_client)
-        logger.info("记忆整合Agent初始化完成")
+        self.temperature = temperature
+        self.top_p = top_p
+        logger.info(f"记忆整合Agent初始化完成 (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "IntegrationAgent":
         """从配置创建Agent"""
-        return cls(llm_client=llm_client)
+        return cls(
+            llm_client=llm_client,
+            temperature=config.INTEGRATION_AGENT_TEMPERATURE,
+            top_p=config.INTEGRATION_AGENT_TOP_P
+        )
 
     def run(self, input_data: IntegrationInput) -> IntegrationOutput:
         """
@@ -77,8 +85,15 @@ class IntegrationAgent(BaseAgent):
 
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM整合 {len(input_data.nodes_to_merge)} 个节点...")
-        response = self._call_llm(prompt)
+        logger.debug(f"调用LLM整合 {len(input_data.nodes_to_merge)} 个节点 "
+                    f"(temp={self.temperature}, top_p={self.top_p})...")
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+
+        # 记录LLM原始响应
+        logger.debug("="*80)
+        logger.debug("📤 Integration Agent LLM原始响应:")
+        logger.debug(response)
+        logger.debug("="*80)
 
         return self._parse_response(response)
 

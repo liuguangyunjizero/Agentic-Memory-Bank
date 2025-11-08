@@ -132,7 +132,7 @@ class ContextUpdateModule:
         """
         批量更新多个节点的 context 和 keywords，并重新计算 embedding
 
-        这个方法用于优化性能：当多个节点需要更新时，避免重复计算同一节点的embedding
+        这个方法用于优化性能：当多个节点需要更新时，使用批量embedding计算
 
         Args:
             updates: 字典，格式为 {node_id: {"context": str, "keywords": list}}
@@ -146,7 +146,10 @@ class ContextUpdateModule:
         if not updates:
             return
 
-        updated_count = 0
+        # 收集需要更新的节点和文本
+        valid_nodes = []
+        texts_to_encode = []
+
         for node_id, update_data in updates.items():
             if not self.graph.has_node(node_id):
                 logger.warning(f"节点不存在，跳过更新: {node_id[:8]}...")
@@ -158,13 +161,24 @@ class ContextUpdateModule:
             node.context = update_data.get("context", node.context)
             node.keywords = update_data.get("keywords", node.keywords)
 
-            # 重新计算 embedding
+            # 收集节点和对应的文本
+            valid_nodes.append(node)
             text = f"{node.summary} {node.context} {' '.join(node.keywords)}"
-            node.embedding = self.embedding_module.compute_embedding(text)
+            texts_to_encode.append(text)
 
-            updated_count += 1
+        if not valid_nodes:
+            logger.warning("没有有效节点需要更新")
+            return
 
-        logger.info(f"批量更新完成: {updated_count}/{len(updates)} 个节点")
+        # 批量计算所有节点的embedding
+        logger.info(f"批量计算 {len(texts_to_encode)} 个节点的 embedding...")
+        embeddings = self.embedding_module.compute_embeddings_batch(texts_to_encode)
+
+        # 更新每个节点的embedding
+        for node, embedding in zip(valid_nodes, embeddings):
+            node.embedding = embedding
+
+        logger.info(f"批量更新完成: {len(valid_nodes)}/{len(updates)} 个节点")
 
     def __repr__(self) -> str:
         """返回模块摘要"""

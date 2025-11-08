@@ -4,7 +4,7 @@ Insight Doc - 任务状态层
 以精简的结构化形式管理任务执行状态：
 - 任务目标
 - 已完成任务列表
-- 待办任务列表（通常0-1个）
+- 当前任务（0或1个）
 
 采用增量式规划，每次只决定下一步。
 
@@ -64,19 +64,19 @@ class InsightDoc:
     Insight Doc 主类
 
     任务状态层的核心数据结构，采用增量式规划理念：
-    - pending_tasks 大多数时刻只有0-1个元素
+    - current_task 要么为空字符串（无任务），要么是单个任务字符串
     - 不维护优先级队列，每次只决定下一步
 
     Attributes:
         doc_id: 唯一标识符（用于临时存储映射）
         task_goal: 用户原始问题
         completed_tasks: 已完成的子任务列表
-        pending_tasks: 待办任务列表（通常0-1个）
+        current_task: 当前待办任务（空字符串表示无任务）
     """
     doc_id: str
     task_goal: str
     completed_tasks: List[CompletedTask] = field(default_factory=list)
-    pending_tasks: List[str] = field(default_factory=list)
+    current_task: str = ""
 
     def add_completed_task(
         self,
@@ -102,27 +102,27 @@ class InsightDoc:
         )
         self.completed_tasks.append(task)
 
-    def set_pending_tasks(self, tasks: List[str]):
+    def set_current_task(self, task: str):
         """
-        设置待办任务列表
+        设置当前任务
 
         Args:
-            tasks: 待办任务描述列表（通常0-1个）
+            task: 任务描述字符串（空字符串表示无任务）
         """
-        self.pending_tasks = tasks
+        self.current_task = task
 
-    def clear_pending_tasks(self):
-        """清空待办任务列表"""
-        self.pending_tasks = []
+    def clear_current_task(self):
+        """清空当前任务"""
+        self.current_task = ""
 
-    def has_pending_tasks(self) -> bool:
+    def has_current_task(self) -> bool:
         """
-        检查是否有待办任务
+        检查是否有当前任务
 
         Returns:
-            有待办任务返回 True，否则返回 False
+            有当前任务返回 True，否则返回 False
         """
-        return len(self.pending_tasks) > 0
+        return bool(self.current_task)
 
     def is_all_completed_successfully(self) -> bool:
         """
@@ -146,7 +146,7 @@ class InsightDoc:
             "doc_id": self.doc_id,
             "task_goal": self.task_goal,
             "completed_tasks": [task.to_dict() for task in self.completed_tasks],
-            "pending_tasks": self.pending_tasks
+            "current_task": self.current_task
         }
 
     @staticmethod
@@ -167,7 +167,7 @@ class InsightDoc:
                 CompletedTask.from_dict(task_data)
                 for task_data in data.get("completed_tasks", [])
             ],
-            pending_tasks=data.get("pending_tasks", [])
+            current_task=data.get("current_task", "")
         )
 
     def get_summary(self) -> str:
@@ -180,7 +180,7 @@ class InsightDoc:
         summary_lines = [
             f"任务目标: {self.task_goal}",
             f"已完成任务数: {len(self.completed_tasks)}",
-            f"待办任务数: {len(self.pending_tasks)}"
+            f"当前任务: {self.current_task if self.current_task else '（无）'}"
         ]
 
         if self.completed_tasks:
@@ -196,5 +196,5 @@ class InsightDoc:
         return (
             f"InsightDoc(doc_id={self.doc_id}, "
             f"completed={len(self.completed_tasks)}, "
-            f"pending={len(self.pending_tasks)})"
+            f"current_task={'Yes' if self.current_task else 'No'})"
         )
