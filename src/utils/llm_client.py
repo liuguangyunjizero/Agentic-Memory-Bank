@@ -7,14 +7,15 @@ LLM 客户端模块
 - 本地模型
 - 自动重试机制
 - Token 计数估算
-
-参考：WebResummer 的 call_server 方法
 """
 
 import time
 import logging
 from typing import List, Dict, Optional, Union
 from openai import OpenAI
+
+# Sentinel value to distinguish "not passed" from "explicitly passed None"
+_UNSET = object()
 
 # 配置日志
 logging.basicConfig(
@@ -74,7 +75,7 @@ class LLMClient:
         )
 
         logger.info(
-            f"LLM 客户端初始化完成: provider={provider}, "
+            f"LLM client initialized successfully: provider={provider}, "
             f"model={model}, base_url={base_url}"
         )
 
@@ -104,7 +105,7 @@ class LLMClient:
         messages: Union[List[Dict[str, str]], str],
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
-        stop: Optional[List[str]] = None,
+        stop=_UNSET,  # Use sentinel to distinguish "not passed" from "passed None"
         max_tokens: Optional[int] = None
     ) -> str:
         """
@@ -115,6 +116,9 @@ class LLMClient:
             temperature: 温度参数（可选，覆盖默认值）
             top_p: 采样参数（可选）
             stop: 停止词列表（可选）
+                - 不传：使用默认 stop 序列 ["\n<tool_response", "<tool_response>"]
+                - 传 None：不使用任何 stop 序列
+                - 传 list：使用指定的 stop 序列
             max_tokens: 最大 token 数（可选）
 
         Returns:
@@ -130,19 +134,17 @@ class LLMClient:
         temperature = temperature if temperature is not None else self.temperature
         top_p = top_p if top_p is not None else self.top_p
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
-        stop = stop or ["\n<tool_response", "<tool_response>"]
+        # ✅ Fixed: Use sentinel to properly handle stop parameter
+        # - If not passed (default _UNSET): use default stop sequences for ReAct Agent
+        # - If explicitly passed None: don't use any stop sequences (for other Agents)
+        # - If passed a list: use that list
+        if stop is _UNSET:
+            stop = ["\n<tool_response", "<tool_response>"]
+        # else: use whatever was passed (None or a list)
 
         # 重试循环
         for attempt in range(self.max_retries):
             try:
-                msg_count = len(messages)
-                total_chars = sum(len(msg.get("content", "")) for msg in messages if isinstance(msg, dict))
-                logger.debug(
-                    f"LLM 调用 (尝试 {attempt + 1}/{self.max_retries}): "
-                    f"消息数={msg_count}, 总字符数={total_chars}, "
-                    f"temp={temperature}, top_p={top_p}"
-                )
-
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -156,23 +158,22 @@ class LLMClient:
                 content = response.choices[0].message.content
 
                 if content:
-                    logger.debug(f"LLM 响应成功: 长度={len(content)} 字符")
                     return content
                 else:
-                    logger.warning(f"LLM 返回空响应 (尝试 {attempt + 1})")
+                    logger.warning(f"LLM returned empty response (attempt {attempt + 1})")
 
             except Exception as e:
                 logger.error(
-                    f"LLM 调用失败 (尝试 {attempt + 1}/{self.max_retries}): {str(e)}"
+                    f"LLM call failed (attempt {attempt + 1}/{self.max_retries}): {str(e)}"
                 )
 
                 if attempt == self.max_retries - 1:
-                    logger.error(f"达到最大重试次数，调用失败")
+                    logger.error(f"Maximum retry attempts reached, call failed")
                     return f"Error: Failed after {self.max_retries} attempts - {str(e)}"
 
                 # 指数退避
                 sleep_time = min(2 ** attempt, 30)
-                logger.info(f"等待 {sleep_time} 秒后重试...")
+                logger.info(f"Waiting {sleep_time} seconds before retry...")
                 time.sleep(sleep_time)
 
         return "Error: No response after retries"
@@ -212,18 +213,18 @@ class LLMClient:
             连接成功返回 True，失败返回 False
         """
         try:
-            logger.info("测试 LLM 连接...")
+            logger.info("Testing LLM connection...")
             response = self.call([{"role": "user", "content": "你好"}])
 
             if "Error" not in response:
-                logger.info("LLM 连接测试成功")
+                logger.info("LLM connection test successful")
                 return True
             else:
-                logger.error(f"LLM 连接测试失败: {response}")
+                logger.error(f"LLM connection test failed: {response}")
                 return False
 
         except Exception as e:
-            logger.error(f"LLM 连接测试失败: {str(e)}")
+            logger.error(f"LLM connection test failed: {str(e)}")
             return False
 
     def __repr__(self) -> str:

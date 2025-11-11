@@ -1,12 +1,5 @@
 """
 图操作模块
-
-封装 Query Graph 的 CRUD 操作：
-- 节点添加/删除
-- 边添加/删除
-- 节点合并
-
-规范文档：第4.3节
 """
 
 import logging
@@ -28,10 +21,10 @@ class GraphOperations:
         from src.storage.query_graph import QueryGraph
 
         if not isinstance(graph, QueryGraph):
-            raise TypeError("graph 必须是 QueryGraph 实例")
+            raise TypeError("graph must be a QueryGraph instance")
 
         self.graph = graph
-        logger.info("图操作模块初始化完成")
+        logger.info("Graph operations module initialized successfully")
 
     def add_node(self, node) -> None:
         """
@@ -41,7 +34,6 @@ class GraphOperations:
             node: QueryGraphNode 实例
         """
         self.graph.add_node(node)
-        logger.debug(f"添加节点: {node.id[:8]}... (context: {node.context[:30]}...)")
 
     def delete_node(self, node_id: str) -> None:
         """
@@ -51,11 +43,10 @@ class GraphOperations:
             node_id: 节点ID
         """
         if not self.graph.has_node(node_id):
-            logger.warning(f"节点不存在，无法删除: {node_id[:8]}...")
+            logger.warning(f"Node does not exist, cannot delete: {node_id[:8]}...")
             return
 
         self.graph.delete_node(node_id)
-        logger.debug(f"删除节点: {node_id[:8]}...")
 
     def add_edge(self, node_id1: str, node_id2: str) -> None:
         """
@@ -67,9 +58,8 @@ class GraphOperations:
         """
         try:
             self.graph.add_edge(node_id1, node_id2)
-            logger.debug(f"添加边: {node_id1[:8]}... <-> {node_id2[:8]}...")
         except ValueError as e:
-            logger.error(f"添加边失败: {str(e)}")
+            logger.error(f"Failed to add edge: {str(e)}")
             raise
 
     def remove_edge(self, node_id1: str, node_id2: str) -> None:
@@ -81,7 +71,6 @@ class GraphOperations:
             node_id2: 第二个节点ID
         """
         self.graph.remove_edge(node_id1, node_id2)
-        logger.debug(f"移除边: {node_id1[:8]}... <-> {node_id2[:8]}...")
 
     def get_neighbors(self, node_id: str) -> List:
         """
@@ -114,7 +103,7 @@ class GraphOperations:
             embedding: 新的 embedding（可选）
         """
         if not self.graph.has_node(node_id):
-            logger.warning(f"节点不存在，无法更新: {node_id[:8]}...")
+            logger.warning(f"Node does not exist, cannot update: {node_id[:8]}...")
             return
 
         node = self.graph.get_node(node_id)
@@ -127,8 +116,6 @@ class GraphOperations:
             node.keywords = keywords
         if embedding is not None:
             node.embedding = embedding
-
-        logger.debug(f"更新节点属性: {node_id[:8]}...")
 
     def merge_nodes(
         self,
@@ -152,7 +139,7 @@ class GraphOperations:
         neighbor_ids: Set[str] = set()
         for old_node_id in old_node_ids:
             if not self.graph.has_node(old_node_id):
-                logger.warning(f"旧节点不存在，跳过: {old_node_id[:8]}...")
+                logger.warning(f"Old node does not exist, skipping: {old_node_id[:8]}...")
                 continue
 
             neighbors = self.get_neighbors(old_node_id)
@@ -171,8 +158,8 @@ class GraphOperations:
                 self.delete_node(old_node_id)
 
         logger.info(
-            f"合并节点完成: {len(old_node_ids)} 个旧节点 -> 新节点 {new_node.id[:8]}..., "
-            f"继承 {len(neighbor_ids)} 条边"
+            f"Node merge completed: {len(old_node_ids)} old nodes -> new node {new_node.id[:8]}..., "
+            f"inherited {len(neighbor_ids)} edges"
         )
 
     def get_node(self, node_id: str):

@@ -5,9 +5,6 @@
 - Top-K 检索
 - 邻居扩展（一层）
 - 时间排序
-
-参考：A-mem 的 HybridRetriever
-规范文档：第4.2节
 """
 
 import numpy as np
@@ -40,7 +37,7 @@ class RetrievalModule:
         self.node_ids: List[str] = []  # 节点ID列表（与corpus_keywords对应）
         self._index_dirty: bool = True  # ✅ 优化：索引脏标记（初始为True需要构建）
 
-        logger.info(f"检索模块初始化: alpha={alpha}, k={k}")
+        logger.info(f"Retrieval module initialized: alpha={alpha}, k={k}")
 
     @classmethod
     def from_config(cls, config) -> "RetrievalModule":
@@ -65,7 +62,7 @@ class RetrievalModule:
         from src.storage.query_graph import QueryGraph
 
         if not isinstance(graph, QueryGraph):
-            raise TypeError("graph 必须是 QueryGraph 实例")
+            raise TypeError("graph must be a QueryGraph instance")
 
         # 提取所有节点的 keywords 作为 BM25 语料
         self.corpus_keywords = []
@@ -82,10 +79,10 @@ class RetrievalModule:
         # 构建 BM25 索引
         if self.corpus_keywords:
             self.bm25 = BM25Okapi(self.corpus_keywords)
-            logger.info(f"BM25 索引构建完成，语料大小: {len(self.corpus_keywords)}")
+            logger.info(f"BM25 index built successfully, corpus size: {len(self.corpus_keywords)}")
         else:
             self.bm25 = None
-            logger.warning("语料为空，无法构建 BM25 索引")
+            logger.warning("Corpus is empty, cannot build BM25 index")
 
         # ✅ 优化：重置脏标记
         self._index_dirty = False
@@ -96,7 +93,6 @@ class RetrievalModule:
         在图修改操作后调用
         """
         self._index_dirty = True
-        logger.debug("BM25 索引已标记为脏，下次检索时将重建")
 
     def hybrid_retrieval(
         self,
@@ -120,11 +116,10 @@ class RetrievalModule:
         from src.storage.query_graph import QueryGraph
 
         if not isinstance(graph, QueryGraph):
-            raise TypeError("graph 必须是 QueryGraph 实例")
+            raise TypeError("graph must be a QueryGraph instance")
 
         # ✅ 优化：自动重建索引（如果索引为脏）
         if self._index_dirty:
-            logger.debug("检测到索引脏标记，自动重建BM25索引...")
             self.build_index(graph)
 
         exclude_ids = exclude_ids or set()
@@ -177,11 +172,6 @@ class RetrievalModule:
         # 4. 获取完整节点信息并按 timestamp 降序排序
         result_nodes = [graph.nodes_dict[nid] for nid in result_ids if nid in graph.nodes_dict]
         result_nodes.sort(key=lambda n: n.timestamp, reverse=True)
-
-        logger.debug(
-            f"混合检索完成: top-k={len(top_k_ids)}, "
-            f"扩展后={len(result_nodes)}"
-        )
 
         return result_nodes
 

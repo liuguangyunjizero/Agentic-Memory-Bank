@@ -2,8 +2,6 @@
 计划 Agent
 
 职责：采用增量式规划，每次只决定下一步任务
-
-参考：规范文档第5.5节
 """
 
 import logging
@@ -58,7 +56,7 @@ class PlanningAgent(BaseAgent):
         super().__init__(llm_client)
         self.temperature = temperature
         self.top_p = top_p
-        logger.info(f"计划Agent初始化完成 (temp={temperature}, top_p={top_p})")
+        logger.info(f"Planning Agent initialized successfully (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "PlanningAgent":
@@ -81,12 +79,17 @@ class PlanningAgent(BaseAgent):
         """
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM进行任务规划 (temp={self.temperature}, top_p={self.top_p})...")
-        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+        # 记录LLM输入
+        logger.debug("="*80)
+        logger.debug("📥 Planning Agent LLM Input:")
+        logger.debug(prompt)
+        logger.debug("="*80)
+
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
         # 记录LLM原始响应
         logger.debug("="*80)
-        logger.debug("📤 Planning Agent LLM原始响应:")
+        logger.debug("📤 Planning Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -115,34 +118,33 @@ class PlanningAgent(BaseAgent):
         completed_tasks_str = format_completed_tasks(completed_tasks)
 
         # 格式化当前待办任务（重要！）
-        current_task_str = "（无）"
+        current_task_str = "(none)"
         if input_data.insight_doc.current_task:
-            current_task_str = f"当前正在执行: {input_data.insight_doc.current_task}"
+            current_task_str = f"Currently executing: {input_data.insight_doc.current_task}"
 
-        # 格式化新记忆节点
-        new_memory_str = "（无）"
+        # Format new memory nodes
+        new_memory_str = "(none)"
         if input_data.new_memory_nodes:
-            lines = [f"生成了 {len(input_data.new_memory_nodes)} 个新的记忆节点：\n"]
+            lines = [f"Generated {len(input_data.new_memory_nodes)} new memory node(s):\n"]
             for i, node_info in enumerate(input_data.new_memory_nodes, 1):
                 if isinstance(node_info, str):
-                    # 兼容旧格式（只有ID）
-                    lines.append(f"{i}. 节点ID: {node_info}")
+                    # Compatible with old format (ID only)
+                    lines.append(f"{i}. Node ID: {node_info}")
                 else:
-                    # 新格式（包含详细信息）
-                    lines.append(f"{i}. 主题: {node_info.get('context', 'N/A')}")
-                    lines.append(f"   关键词: {', '.join(node_info.get('keywords', []))}")
+                    # New format (with detailed information)
+                    lines.append(f"{i}. Topic: {node_info.get('context', 'N/A')}")
+                    lines.append(f"   Keywords: {', '.join(node_info.get('keywords', []))}")
+                    # ✅ Fixed: Do NOT truncate summary - pass complete content
                     summary = node_info.get('summary', '')
-                    if len(summary) > 150:
-                        summary = summary[:150] + "..."
-                    lines.append(f"   摘要: {summary}")
+                    lines.append(f"   Summary: {summary}")
             new_memory_str = "\n".join(lines)
 
-        # 格式化冲突通知
-        conflict_str = "（无）"
+        # Format conflict notification
+        conflict_str = "(none)"
         if input_data.conflict_notification:
             conflict_str = (
-                f"检测到冲突：节点 {', '.join(input_data.conflict_notification.conflicting_node_ids[:2])} 等存在冲突\n"
-                f"冲突描述：{input_data.conflict_notification.conflict_description}"
+                f"Conflict detected: nodes {', '.join(input_data.conflict_notification.conflicting_node_ids[:2])} etc. have conflicts\n"
+                f"Conflict description: {input_data.conflict_notification.conflict_description}"
             )
 
         return PLANNING_PROMPT.format(
@@ -175,14 +177,14 @@ class PlanningAgent(BaseAgent):
                 CompletedTask(
                     type=TaskType(task_dict.get("type", "NORMAL")),
                     description=task_dict.get("description", ""),
-                    status=task_dict.get("status", "成功"),
+                    status=task_dict.get("status", "success"),
                     context=task_dict.get("context", "")
                 )
                 for task_dict in completed_tasks_data
             ]
 
             logger.info(
-                f"规划完成: 已完成={len(completed_tasks)}, 当前任务={'是' if current_task else '否'}"
+                f"Planning completed: completed={len(completed_tasks)}, current_task={'yes' if current_task else 'no'}"
             )
 
             return PlanningOutput(
@@ -192,5 +194,5 @@ class PlanningAgent(BaseAgent):
             )
 
         except Exception as e:
-            logger.error(f"解析规划响应失败: {str(e)}")
+            logger.error(f"Failed to parse planning response: {str(e)}")
             raise

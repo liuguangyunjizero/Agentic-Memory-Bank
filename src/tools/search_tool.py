@@ -42,13 +42,13 @@ class SearchTool:
         """
         if not search_api_key or search_api_key == "your-serper-api-key-here":
             raise ValueError(
-                "未配置Serper API key。请在.env文件中设置SERPER_API_KEY。\n"
-                "注册地址：https://serper.dev/"
+                "Serper API key not configured. Please set SERPER_API_KEY in .env file.\n"
+                "Register at: https://serper.dev/"
             )
 
         self.search_api_key = search_api_key
         self.max_results_per_query = max_results_per_query
-        logger.info("SearchTool初始化完成 (Serper API)")
+        logger.info("SearchTool initialized successfully (Serper API)")
 
     def call(self, params: Dict[str, Any]) -> str:
         """
@@ -70,7 +70,7 @@ class SearchTool:
         if not isinstance(queries, list):
             queries = [queries]  # 如果是单个字符串，转换为列表
 
-        logger.info(f"执行搜索: {len(queries)} 个查询")
+        logger.info(f"Executing search: {len(queries)} queries")
 
         try:
             all_results = []
@@ -85,7 +85,7 @@ class SearchTool:
                 "results": all_results
             }
 
-            logger.info(f"搜索完成: 共 {len(all_results)} 个结果")
+            logger.info(f"Search completed: {len(all_results)} results")
             return json.dumps(output, ensure_ascii=False, indent=2)
 
         except Exception as e:
@@ -103,8 +103,6 @@ class SearchTool:
         Returns:
             搜索结果列表
         """
-        logger.debug(f"使用Serper API搜索: {query}")
-
         try:
             response = requests.post(
                 "https://google.serper.dev/search",
@@ -132,15 +130,15 @@ class SearchTool:
                     })
 
             if not results:
-                logger.warning(f"搜索 '{query}' 未找到结果")
+                logger.warning(f"Search '{query}' returned no results")
 
             return results
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"搜索失败: {str(e)}")
+            logger.error(f"Search failed: {str(e)}")
             raise
         except Exception as e:
-            logger.error(f"搜索过程中发生异常: {str(e)}")
+            logger.error(f"Exception occurred during search: {str(e)}")
             raise
 
     def __repr__(self) -> str:

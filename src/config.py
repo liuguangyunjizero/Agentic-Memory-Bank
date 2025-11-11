@@ -153,6 +153,14 @@ class Config:
             os.getenv("REACT_AGENT_TOP_P", "0.95")
         )
 
+        # Visit Tool Extraction (LLM-based content extraction)
+        self.VISIT_EXTRACTION_TEMPERATURE = float(
+            os.getenv("VISIT_EXTRACTION_TEMPERATURE", "0.2")
+        )
+        self.VISIT_EXTRACTION_TOP_P = float(
+            os.getenv("VISIT_EXTRACTION_TOP_P", "0.85")
+        )
+
         # ===== 超长文本处理 =====
         self.CHUNK_RATIO = float(os.getenv("CHUNK_RATIO", "0.9"))
 

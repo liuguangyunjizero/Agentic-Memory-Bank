@@ -2,8 +2,6 @@
 结构化 Agent
 
 职责：对单个主题的内容进行结构化压缩
-
-参考：规范文档第5.2节
 """
 
 import logging
@@ -49,7 +47,7 @@ class StructureAgent(BaseAgent):
         super().__init__(llm_client)
         self.temperature = temperature
         self.top_p = top_p
-        logger.info(f"结构化Agent初始化完成 (temp={temperature}, top_p={top_p})")
+        logger.info(f"Structure Agent initialized successfully (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "StructureAgent":
@@ -72,7 +70,6 @@ class StructureAgent(BaseAgent):
         """
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM进行结构化 (temp={self.temperature}, top_p={self.top_p})...")
         # 使用配置的temperature和top_p来减少hallucination
         # 确保<answer>标签内容被准确复制
         response = self._call_llm_with_params(prompt, temperature=self.temperature, top_p=self.top_p)
@@ -91,18 +88,24 @@ class StructureAgent(BaseAgent):
         Returns:
             LLM响应
         """
+        # 记录LLM输入
+        logger.debug("="*80)
+        logger.debug("📥 Structure Agent LLM Input:")
+        logger.debug(prompt)
+        logger.debug("="*80)
+
         try:
-            response = self.llm_client.call(prompt, temperature=temperature, top_p=top_p)
+            response = self.llm_client.call(prompt, temperature=temperature, top_p=top_p, stop=None)
 
             # 记录LLM原始响应
             logger.debug("="*80)
-            logger.debug("📤 Structure Agent LLM原始响应:")
+            logger.debug("📤 Structure Agent LLM Raw Response:")
             logger.debug(response)
             logger.debug("="*80)
 
             return response
         except Exception as e:
-            logger.error(f"LLM 调用失败: {str(e)}")
+            logger.error(f"LLM call failed: {str(e)}")
             raise
 
     def _build_prompt(self, input_data: StructureInput) -> str:
@@ -137,12 +140,12 @@ class StructureAgent(BaseAgent):
             summary = data.get("summary", "")
 
             if not summary:
-                logger.warning("LLM返回空摘要，使用原始响应")
+                logger.warning("LLM returned empty summary, using raw response")
                 summary = response
 
             return StructureOutput(summary=summary)
 
         except Exception as e:
-            logger.error(f"解析结构化响应失败: {str(e)}")
+            logger.error(f"Failed to parse structure response: {str(e)}")
             # 返回原始响应作为摘要
             return StructureOutput(summary=response)

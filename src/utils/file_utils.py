@@ -6,8 +6,6 @@
 - 正式存储管理
 - 多模态文件处理（图片、文档等）
 - 使用 pathlib 确保跨平台兼容性
-
-参考：规范文档第11章
 """
 
 import base64
@@ -48,7 +46,7 @@ class FileUtils:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            f"文件工具初始化: temp_dir={self.temp_dir}, "
+            f"File utilities initialized: temp_dir={self.temp_dir}, "
             f"storage_dir={self.storage_dir}"
         )
 
@@ -94,7 +92,7 @@ class FileUtils:
         with open(filepath, 'wb') as f:
             f.write(file_data)
 
-        logger.info(f"文件已保存到临时目录: {filepath}")
+        logger.info(f"File saved to temp directory: {filepath}")
         return filepath
 
     def move_to_storage(
@@ -126,7 +124,7 @@ class FileUtils:
         # 移动文件
         shutil.move(str(temp_path), str(storage_path))
 
-        logger.info(f"文件已移动到正式存储: {storage_path}")
+        logger.info(f"File moved to storage: {storage_path}")
         return storage_path
 
     def read_image_as_base64(self, filepath: Union[str, Path]) -> str:
@@ -145,7 +143,6 @@ class FileUtils:
             image_data = f.read()
 
         encoded = base64.b64encode(image_data).decode('utf-8')
-        logger.debug(f"图片已编码为 base64: {filepath}")
 
         return encoded
 
@@ -165,7 +162,6 @@ class FileUtils:
         with open(filepath, 'r', encoding=encoding) as f:
             content = f.read()
 
-        logger.debug(f"文本文件已读取: {filepath}")
         return content
 
     def read_document(self, filepath: Union[str, Path]) -> str:
@@ -184,7 +180,6 @@ class FileUtils:
             doc_data = f.read()
 
         encoded = base64.b64encode(doc_data).decode('utf-8')
-        logger.debug(f"文档已编码为 base64: {filepath}")
 
         return encoded
 
@@ -210,8 +205,6 @@ class FileUtils:
         with open(filepath, 'w', encoding=encoding) as f:
             f.write(content)
 
-        logger.debug(f"文本文件已写入: {filepath}")
-
     def delete_file(self, filepath: Union[str, Path]):
         """
         删除文件
@@ -223,9 +216,9 @@ class FileUtils:
 
         if filepath.exists():
             filepath.unlink()
-            logger.info(f"文件已删除: {filepath}")
+            logger.info(f"File deleted: {filepath}")
         else:
-            logger.warning(f"文件不存在，无法删除: {filepath}")
+            logger.warning(f"File does not exist, cannot delete: {filepath}")
 
     def cleanup_temp_dir(self):
         """
@@ -235,9 +228,8 @@ class FileUtils:
             for file_path in self.temp_dir.iterdir():
                 if file_path.is_file():
                     file_path.unlink()
-                    logger.debug(f"临时文件已删除: {file_path}")
 
-            logger.info("临时目录已清理")
+            logger.info("Temp directory cleaned up")
 
     def _get_extension(self, file_type: str) -> str:
         """

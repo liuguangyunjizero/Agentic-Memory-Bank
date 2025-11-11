@@ -2,8 +2,6 @@
 记忆分析 Agent
 
 职责：判断新节点与现有节点的关系（conflict/related/unrelated）
-
-参考：规范文档第5.3节
 """
 
 import logging
@@ -22,6 +20,7 @@ class NodeInfo:
     summary: str = ""
     context: str = ""
     keywords: List[str] = None
+    merge_description: Optional[str] = None
 
     def __post_init__(self):
         if self.keywords is None:
@@ -37,12 +36,6 @@ class Relationship:
 
     # conflict 特有字段
     conflict_description: Optional[str] = None
-
-    # related 特有字段
-    context_update_new: Optional[str] = None
-    context_update_existing: Optional[str] = None
-    keywords_update_new: Optional[List[str]] = None
-    keywords_update_existing: Optional[List[str]] = None
 
 
 @dataclass
@@ -77,7 +70,7 @@ class AnalysisAgent(BaseAgent):
         super().__init__(llm_client)
         self.temperature = temperature
         self.top_p = top_p
-        logger.info(f"记忆分析Agent初始化完成 (temp={temperature}, top_p={top_p})")
+        logger.info(f"Memory Analysis Agent initialized successfully (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "AnalysisAgent":
@@ -99,18 +92,22 @@ class AnalysisAgent(BaseAgent):
             AnalysisOutput 实例
         """
         if not input_data.candidate_nodes:
-            logger.warning("候选节点列表为空，返回空关系")
+            logger.warning("Candidate node list is empty, returning empty relationships")
             return AnalysisOutput(relationships=[])
 
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM分析 {len(input_data.candidate_nodes)} 个候选节点的关系 "
-                    f"(temp={self.temperature}, top_p={self.top_p})...")
-        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+        # 记录LLM输入
+        logger.debug("="*80)
+        logger.debug("📥 Analysis Agent LLM Input:")
+        logger.debug(prompt)
+        logger.debug("="*80)
+
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
         # 记录LLM原始响应
         logger.debug("="*80)
-        logger.debug("📤 Analysis Agent LLM原始响应:")
+        logger.debug("📤 Analysis Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -168,16 +165,12 @@ class AnalysisAgent(BaseAgent):
                     existing_node_id=rel_data.get("existing_node_id", ""),
                     relationship=rel_data.get("relationship", "unrelated"),
                     reasoning=rel_data.get("reasoning", ""),
-                    conflict_description=rel_data.get("conflict_description"),
-                    context_update_new=rel_data.get("context_update_new"),
-                    context_update_existing=rel_data.get("context_update_existing"),
-                    keywords_update_new=rel_data.get("keywords_update_new"),
-                    keywords_update_existing=rel_data.get("keywords_update_existing")
+                    conflict_description=rel_data.get("conflict_description")
                 )
                 relationships.append(relationship)
 
             logger.info(
-                f"分析完成: {sum(1 for r in relationships if r.relationship == 'conflict')} conflict, "
+                f"Analysis completed: {sum(1 for r in relationships if r.relationship == 'conflict')} conflict, "
                 f"{sum(1 for r in relationships if r.relationship == 'related')} related, "
                 f"{sum(1 for r in relationships if r.relationship == 'unrelated')} unrelated"
             )
@@ -185,6 +178,6 @@ class AnalysisAgent(BaseAgent):
             return AnalysisOutput(relationships=relationships)
 
         except Exception as e:
-            logger.error(f"解析分析响应失败: {str(e)}")
+            logger.error(f"Failed to parse analysis response: {str(e)}")
             # 返回默认的无关关系
             return AnalysisOutput(relationships=[])

@@ -5,9 +5,6 @@ Embedding 计算模块
 - 批量计算支持
 - 向量归一化（用于余弦相似度）
 - 相似度计算
-
-参考：A-mem 的 SimpleEmbeddingRetriever
-规范文档：第4.1节
 """
 
 import numpy as np
@@ -35,13 +32,13 @@ class EmbeddingModule:
                        'all-mpnet-base-v2' - 精确，维度768
         """
         self.model_name = model_name
-        logger.info(f"正在加载 Embedding 模型: {model_name}")
+        logger.info(f"Loading Embedding model: {model_name}")
 
         try:
             self.model = SentenceTransformer(model_name)
-            logger.info(f"Embedding 模型加载成功，维度: {self.model.get_sentence_embedding_dimension()}")
+            logger.info(f"Embedding model loaded successfully, dimension: {self.model.get_sentence_embedding_dimension()}")
         except Exception as e:
-            logger.error(f"Embedding 模型加载失败: {str(e)}")
+            logger.error(f"Failed to load Embedding model: {str(e)}")
             raise
 
     @classmethod
@@ -68,7 +65,7 @@ class EmbeddingModule:
             归一化的 embedding 向量
         """
         if not text or not text.strip():
-            logger.warning("输入文本为空，返回零向量")
+            logger.warning("Input text is empty, returning zero vector")
             dim = self.model.get_sentence_embedding_dimension()
             return np.zeros(dim)
 

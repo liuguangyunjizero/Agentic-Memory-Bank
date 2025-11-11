@@ -2,12 +2,10 @@
 记忆整合 Agent
 
 职责：基于冲突节点和验证结果，生成整合后的新节点
-
-参考：规范文档第5.4节
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from src.agents.base_agent import BaseAgent
 from src.prompts.agent_prompts import INTEGRATION_PROMPT, format_nodes_to_merge
@@ -23,6 +21,7 @@ class NodeWithNeighbors:
     context: str
     keywords: List[str]
     neighbors: List[Dict[str, Any]]  # [{"id": ..., "context": ..., "keywords": [...]}, ...]
+    merge_description: Optional[str] = None
 
 
 @dataclass
@@ -36,8 +35,7 @@ class IntegrationInput:
 class IntegrationOutput:
     """整合 Agent 输出"""
     merged_node: Dict[str, Any]  # {"summary": ..., "context": ..., "keywords": [...]}
-    neighbor_updates: Dict[str, Dict]  # {neighbor_id: {"context": ..., "keywords": [...]}}
-    interaction_tree_description: str  # 合并操作描述
+    merge_description: str  # 合并操作描述
 
 
 class IntegrationAgent(BaseAgent):
@@ -59,7 +57,7 @@ class IntegrationAgent(BaseAgent):
         super().__init__(llm_client)
         self.temperature = temperature
         self.top_p = top_p
-        logger.info(f"记忆整合Agent初始化完成 (temp={temperature}, top_p={top_p})")
+        logger.info(f"Memory Integration Agent initialized successfully (temp={temperature}, top_p={top_p})")
 
     @classmethod
     def from_config(cls, llm_client, config) -> "IntegrationAgent":
@@ -81,17 +79,21 @@ class IntegrationAgent(BaseAgent):
             IntegrationOutput 实例
         """
         if not input_data.nodes_to_merge:
-            raise ValueError("待合并节点列表不能为空")
+            raise ValueError("Node list to merge cannot be empty")
 
         prompt = self._build_prompt(input_data)
 
-        logger.debug(f"调用LLM整合 {len(input_data.nodes_to_merge)} 个节点 "
-                    f"(temp={self.temperature}, top_p={self.top_p})...")
-        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+        # 记录LLM输入
+        logger.debug("="*80)
+        logger.debug("📥 Integration Agent LLM Input:")
+        logger.debug(prompt)
+        logger.debug("="*80)
+
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
         # 记录LLM原始响应
         logger.debug("="*80)
-        logger.debug("📤 Integration Agent LLM原始响应:")
+        logger.debug("📤 Integration Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -139,17 +141,15 @@ class IntegrationAgent(BaseAgent):
             data = self._parse_json_response(response)
 
             merged_node = data.get("merged_node", {})
-            neighbor_updates = data.get("neighbor_updates", {})
-            description = data.get("interaction_tree_description", "节点合并")
+            description = data.get("merge_description", "Node merge")
 
-            logger.info(f"整合完成: 生成新节点，{len(neighbor_updates)} 个邻居需要更新")
+            logger.info(f"Integration completed: new node generated")
 
             return IntegrationOutput(
                 merged_node=merged_node,
-                neighbor_updates=neighbor_updates,
-                interaction_tree_description=description
+                merge_description=description
             )
 
         except Exception as e:
-            logger.error(f"解析整合响应失败: {str(e)}")
+            logger.error(f"Failed to parse integration response: {str(e)}")
             raise

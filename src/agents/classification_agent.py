@@ -2,8 +2,6 @@
 分类/聚类 Agent
 
 职责：对长上下文按主题进行分类/聚类
-
-参考：规范文档第5.1节
 """
 
 import json
@@ -64,7 +62,7 @@ class ClassificationAgent(BaseAgent):
         self.chunk_ratio = chunk_ratio
         self.temperature = temperature
         self.top_p = top_p
-        logger.info(f"分类Agent初始化: window_size={window_size}, chunk_ratio={chunk_ratio}, "
+        logger.info(f"Classification Agent initialized: window_size={window_size}, chunk_ratio={chunk_ratio}, "
                    f"temp={temperature}, top_p={top_p}")
 
     @classmethod
@@ -96,7 +94,7 @@ class ClassificationAgent(BaseAgent):
             return self._classify_single_chunk(input_data)
         else:
             # 超长，分次加载
-            logger.warning(f"上下文超长 ({token_count} tokens)，启用分块处理")
+            logger.warning(f"Context too long ({token_count} tokens), enabling chunked processing")
             return self._classify_multiple_chunks(input_data)
 
     def _classify_single_chunk(self, input_data: ClassificationInput) -> ClassificationOutput:
@@ -111,12 +109,17 @@ class ClassificationAgent(BaseAgent):
         """
         prompt = self._build_prompt(input_data.context, input_data.task_goal, input_data.current_task)
 
-        logger.debug(f"调用LLM进行分类 (temp={self.temperature}, top_p={self.top_p})...")
-        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p)
+        # 记录LLM输入
+        logger.debug("="*80)
+        logger.debug("Classification Agent LLM input:")
+        logger.debug(prompt)
+        logger.debug("="*80)
+
+        response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
         # 记录LLM原始响应
         logger.debug("="*80)
-        logger.debug("📤 Classification Agent LLM原始响应:")
+        logger.debug("Classification Agent LLM raw response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -135,11 +138,10 @@ class ClassificationAgent(BaseAgent):
         chunk_size = int(self.window_size * self.chunk_ratio)
         chunks = self._split_by_boundaries(input_data.context, chunk_size)
 
-        logger.info(f"上下文分为 {len(chunks)} 个块")
+        logger.info(f"Context divided into {len(chunks)} chunks")
 
         all_clusters = []
         for i, chunk in enumerate(chunks, 1):
-            logger.debug(f"处理块 {i}/{len(chunks)}")
             chunk_input = ClassificationInput(
                 context=chunk,
                 task_goal=input_data.task_goal
@@ -162,8 +164,8 @@ class ClassificationAgent(BaseAgent):
             完整 prompt
         """
         return CLASSIFICATION_PROMPT.format(
-            task_goal=task_goal or "（无）",
-            current_task=current_task or "（无）",
+            task_goal=task_goal or "(none)",
+            current_task=current_task or "(none)",
             context=context
         )
 
@@ -213,7 +215,7 @@ class ClassificationAgent(BaseAgent):
                     content = input_data.context if input_data else ""
 
                     if not content:
-                        logger.warning(f"cluster {i} 缺少content（input_data为空），使用空字符串")
+                        logger.warning(f"cluster {i} missing content (input_data is empty), using empty string")
 
                     # 创建 Cluster 对象
                     cluster = Cluster(
@@ -225,7 +227,7 @@ class ClassificationAgent(BaseAgent):
                     clusters.append(cluster)
 
                 except Exception as e:
-                    logger.warning(f"解析cluster块 {i} 失败: {str(e)}, 跳过该块")
+                    logger.warning(f"Failed to parse cluster block {i}: {str(e)}, skipping this block")
                     continue
 
             # 如果成功解析到cluster，返回结果
@@ -238,8 +240,7 @@ class ClassificationAgent(BaseAgent):
                 raise ValueError("未能解析出任何cluster")
 
         except Exception as e:
-            logger.error(f"解析分类响应失败: {str(e)}")
-            logger.debug(f"响应内容（前1000字符）: {response[:1000]}")
+            logger.error(f"Failed to parse classification response: {str(e)}")
 
             # Fallback: 返回默认单一cluster
             import re

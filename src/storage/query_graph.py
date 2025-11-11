@@ -1,18 +1,5 @@
 """
 Query Graph - 语义记忆图
-
-使用邻接表实现的图结构，存储结构化的语义记忆：
-- 节点：包含摘要、上下文、关键词、embedding
-- 边：related 关系（无向边）
-
-设计参考：A-mem 的 MemoryNote 和 AgenticMemorySystem
-
-核心思想：
-- 使用字典存储节点：{id: Node}
-- 节点内使用列表存储邻居：node.links = [neighbor_id1, ...]
-- 不使用 NetworkX，自实现邻接表
-
-参考：规范文档第3.2节
 """
 
 import uuid
@@ -34,11 +21,10 @@ class QueryGraphNode:
         keywords: 关键词列表
         embedding: 语义向量（numpy数组）
         timestamp: 创建时间戳
+        merge_description: 合并节点描述（仅合并节点有值）
         links: 邻居节点ID列表（related边）
-        retrieval_count: 被检索次数
-        last_accessed: 最后访问时间
     """
-    # 核心属性
+    # 核心属性（无默认值的字段必须在前）
     id: str
     summary: str
     context: str
@@ -46,12 +32,9 @@ class QueryGraphNode:
     embedding: np.ndarray
     timestamp: float
 
-    # 图结构属性
+    # 可选属性（有默认值的字段必须在后）
+    merge_description: Optional[str] = None
     links: List[str] = field(default_factory=list)
-
-    # 可选属性
-    retrieval_count: int = 0
-    last_accessed: Optional[float] = None
 
     def add_link(self, neighbor_id: str):
         """
@@ -73,11 +56,6 @@ class QueryGraphNode:
         if neighbor_id in self.links:
             self.links.remove(neighbor_id)
 
-    def increment_retrieval_count(self):
-        """增加检索计数并更新最后访问时间"""
-        self.retrieval_count += 1
-        self.last_accessed = time.time()
-
     def to_dict(self) -> Dict[str, Any]:
         """
         导出为字典（用于持久化）
@@ -90,11 +68,10 @@ class QueryGraphNode:
             "summary": self.summary,
             "context": self.context,
             "keywords": self.keywords,
+            "merge_description": self.merge_description,
             "embedding": self.embedding.tolist(),
             "timestamp": self.timestamp,
-            "links": self.links,
-            "retrieval_count": self.retrieval_count,
-            "last_accessed": self.last_accessed
+            "links": self.links
         }
 
     @staticmethod
@@ -115,9 +92,8 @@ class QueryGraphNode:
             keywords=data["keywords"],
             embedding=np.array(data["embedding"]),
             timestamp=data["timestamp"],
-            links=data.get("links", []),
-            retrieval_count=data.get("retrieval_count", 0),
-            last_accessed=data.get("last_accessed")
+            merge_description=data.get("merge_description"),
+            links=data.get("links", [])
         )
 
     def __repr__(self) -> str:

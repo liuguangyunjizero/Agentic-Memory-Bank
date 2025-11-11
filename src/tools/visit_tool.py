@@ -35,7 +35,7 @@ class VisitTool:
         "required": ["url", "goal"]
     }
 
-    def __init__(self, llm_client=None, jina_api_key: str = None, max_content_length: int = 95000):
+    def __init__(self, llm_client=None, jina_api_key: str = None, max_content_length: int = 95000, temperature: float = 0.2, top_p: float = 0.85):
         """
         初始化Visit工具
 
@@ -43,18 +43,22 @@ class VisitTool:
             llm_client: LLMClient 实例（用于内容提取）
             jina_api_key: Jina Reader API key（必需）
             max_content_length: 最大内容长度（字符数）
+            temperature: LLM温度参数（默认0.2，用于精确提取）
+            top_p: LLM采样参数（默认0.85）
         """
         if not jina_api_key or jina_api_key == "your-jina-api-key-here":
             raise ValueError(
-                "未配置Jina API key。请在.env文件中设置JINA_API_KEY。\n"
-                "注册地址：https://jina.ai/"
+                "Jina API key not configured. Please set JINA_API_KEY in .env file.\n"
+                "Register at: https://jina.ai/"
             )
 
         self.llm_client = llm_client
         self.jina_api_key = jina_api_key
         self.max_content_length = max_content_length
+        self.temperature = temperature
+        self.top_p = top_p
 
-        logger.info("VisitTool初始化完成 (使用Jina Reader API)")
+        logger.info(f"VisitTool initialized successfully (using Jina Reader API, temp={temperature}, top_p={top_p})")
 
     def call(self, params: Dict[str, Any]) -> str:
         """
@@ -72,8 +76,7 @@ class VisitTool:
         if not url:
             raise ValueError("url parameter is required")
 
-        logger.info(f"访问网页: {url}")
-        logger.debug(f"提取目标: {goal}")
+        logger.info(f"Visiting webpage: {url}")
 
         content = self._jina_reader(url, goal)
 
@@ -84,7 +87,7 @@ class VisitTool:
             "content_length": len(content)
         }
 
-        logger.info(f"网页访问完成: {len(content)} 字符")
+        logger.info(f"Webpage visit completed: {len(content)} characters")
         return json.dumps(output, ensure_ascii=False, indent=2)
 
     def _jina_reader(self, url: str, goal: str) -> str:
@@ -98,8 +101,6 @@ class VisitTool:
         Returns:
             提取的网页内容（markdown格式）
         """
-        logger.debug(f"使用Jina Reader API: {url}")
-
         max_retries = 3
         timeout = 60  # 增加超时时间到60秒
 
@@ -123,7 +124,7 @@ class VisitTool:
                     # 截断过长内容
                     if len(webpage_content) > self.max_content_length:
                         webpage_content = webpage_content[:self.max_content_length]
-                        logger.warning(f"内容过长，已截断到 {self.max_content_length} 字符")
+                        logger.warning(f"Content too long, truncated to {self.max_content_length} characters")
 
                     # 使用LLM提取相关内容
                     if self.llm_client and goal:
@@ -133,16 +134,16 @@ class VisitTool:
                     return webpage_content
 
                 else:
-                    error_msg = f"Jina Reader返回错误状态码: {response.status_code}"
-                    logger.warning(f"尝试 {attempt+1}/{max_retries}: {error_msg}")
+                    error_msg = f"Jina Reader returned error status code: {response.status_code}"
+                    logger.warning(f"Attempt {attempt+1}/{max_retries}: {error_msg}")
                     last_error = ValueError(error_msg)
 
             except Exception as e:
-                logger.warning(f"Jina Reader尝试 {attempt+1}/{max_retries} 失败: {str(e)}")
+                logger.warning(f"Jina Reader attempt {attempt+1}/{max_retries} failed: {str(e)}")
                 last_error = e
 
         # 所有重试都失败，抛出最后一个错误
-        error_msg = f"访问 {url} 失败（重试{max_retries}次后）: {str(last_error)}"
+        error_msg = f"Failed to visit {url} (after {max_retries} retries): {str(last_error)}"
         logger.error(error_msg)
         raise RuntimeError(error_msg) from last_error
 
@@ -166,8 +167,8 @@ class VisitTool:
         )
 
         try:
-            # 调用LLM提取相关内容
-            response = self.llm_client.call(prompt)
+            # 调用LLM提取相关内容（使用配置的temperature和top_p）
+            response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
             # 尝试解析JSON
             try:
@@ -193,12 +194,12 @@ Summary:
 
             except json.JSONDecodeError:
                 # 如果JSON解析失败，直接返回LLM的响应
-                logger.warning("LLM返回内容不是有效的JSON，返回原始响应")
+                logger.warning("LLM response is not valid JSON, returning raw response")
                 return response
 
         except Exception as e:
-            logger.error(f"LLM提取失败: {str(e)}")
-            raise RuntimeError(f"使用LLM提取网页内容失败: {str(e)}") from e
+            logger.error(f"LLM extraction failed: {str(e)}")
+            raise RuntimeError(f"Failed to extract webpage content using LLM: {str(e)}") from e
 
     def __repr__(self) -> str:
         """返回工具摘要"""
