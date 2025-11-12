@@ -1,10 +1,10 @@
 """
-Embedding 计算模块
+Embedding Computation Module
 
-使用 SentenceTransformer 进行本地 Embedding 计算：
-- 批量计算支持
-- 向量归一化（用于余弦相似度）
-- 相似度计算
+Uses SentenceTransformer for local embedding computation:
+- Batch computation support
+- Vector normalization (for cosine similarity)
+- Similarity calculation
 """
 
 import numpy as np
@@ -17,19 +17,19 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingModule:
     """
-    Embedding 计算模块（参考 A-mem）
+    Embedding Computation Module (inspired by A-mem)
 
-    使用 SentenceTransformer 进行本地计算，无需 API 调用
+    Uses SentenceTransformer for local computation, no API calls needed
     """
 
     def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
         """
-        初始化 Embedding 模块
+        Initialize Embedding Module
 
         Args:
-            model_name: SentenceTransformer 模型名称
-                       'all-MiniLM-L6-v2' - 快速，维度384
-                       'all-mpnet-base-v2' - 精确，维度768
+            model_name: SentenceTransformer model name
+                       'all-MiniLM-L6-v2' - fast, dimension 384
+                       'all-mpnet-base-v2' - accurate, dimension 768
         """
         self.model_name = model_name
         logger.info(f"Loading Embedding model: {model_name}")
@@ -44,89 +44,65 @@ class EmbeddingModule:
     @classmethod
     def from_config(cls, config) -> "EmbeddingModule":
         """
-        从 Config 对象创建 Embedding 模块
+        Create Embedding module from Config object
 
         Args:
-            config: Config 实例
+            config: Config instance
 
         Returns:
-            EmbeddingModule 实例
+            EmbeddingModule instance
         """
         return cls(model_name=config.EMBEDDING_MODEL)
 
     def compute_embedding(self, text: str) -> np.ndarray:
         """
-        计算单个文本的 embedding
+        Compute embedding for a single text
 
         Args:
-            text: 输入文本（通常是 summary + context + keywords 的组合）
+            text: Input text (usually combination of summary + context + keywords)
 
         Returns:
-            归一化的 embedding 向量
+            Normalized embedding vector
         """
         if not text or not text.strip():
             logger.warning("Input text is empty, returning zero vector")
             dim = self.model.get_sentence_embedding_dimension()
             return np.zeros(dim)
 
-        # 计算 embedding
+        # Compute embedding
         embedding = self.model.encode([text])[0]
 
-        # 归一化（用于余弦相似度）
+        # Normalize (for cosine similarity)
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
 
         return embedding
 
-    def compute_embeddings_batch(self, texts: List[str]) -> np.ndarray:
-        """
-        批量计算 embedding（提高效率）
-
-        Args:
-            texts: 文本列表
-
-        Returns:
-            shape 为 (n, dim) 的矩阵，每行一个归一化向量
-        """
-        if not texts:
-            return np.array([])
-
-        # 批量计算
-        embeddings = self.model.encode(texts)
-
-        # 批量归一化
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        # 避免除以零
-        norms = np.where(norms == 0, 1, norms)
-        embeddings = embeddings / norms
-
-        return embeddings
-
     @staticmethod
     def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
-        计算余弦相似度
+        Calculate cosine similarity
 
         Args:
-            vec1, vec2: 已归一化的向量
+            vec1, vec2: Normalized vectors
 
         Returns:
-            相似度分数 [0, 1]
+            Similarity score [0, 1]
         """
         similarity = float(np.dot(vec1, vec2))
-        # 确保在 [0, 1] 范围内（由于浮点误差可能略微超出）
+        # Ensure in [0, 1] range (may slightly exceed due to floating point error)
         return max(0.0, min(1.0, similarity))
 
     def get_embedding_dimension(self) -> int:
         """
-        获取 embedding 维度
+        Get embedding dimension
 
         Returns:
-            向量维度
+            Vector dimension
         """
         return self.model.get_sentence_embedding_dimension()
 
     def __repr__(self) -> str:
-        """返回模块摘要"""
+        """Return module summary"""
         return f"EmbeddingModule(model={self.model_name}, dim={self.get_embedding_dimension()})"

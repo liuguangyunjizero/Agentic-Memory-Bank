@@ -1,7 +1,7 @@
 """
-计划 Agent
+Planning Agent
 
-职责：采用增量式规划，每次只决定下一步任务
+Responsibility: Incremental planning, decides only the next task each time
 """
 
 import logging
@@ -16,42 +16,42 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ConflictNotification:
-    """冲突通知"""
+    """Conflict notification"""
     conflicting_node_ids: List[str]
     conflict_description: str
 
 
 @dataclass
 class PlanningInput:
-    """计划 Agent 输入"""
-    insight_doc: InsightDoc  # 当前任务状态
-    new_memory_nodes: Optional[List] = None  # 新生成的记忆
-    conflict_notification: Optional[ConflictNotification] = None  # 冲突通知
+    """Planning Agent input"""
+    insight_doc: InsightDoc  # Current task state
+    new_memory_nodes: Optional[List] = None  # Newly generated memory
+    conflict_notification: Optional[ConflictNotification] = None  # Conflict notification
 
 
 @dataclass
 class PlanningOutput:
-    """计划 Agent 输出"""
+    """Planning Agent output"""
     task_goal: str
-    completed_tasks: List[CompletedTask]  # ✅ 修复：使用 CompletedTask 对象列表
-    current_task: str  # 空字符串表示无任务
+    completed_tasks: List[CompletedTask]  # List of CompletedTask objects
+    current_task: str  # Empty string means no task
 
 
 class PlanningAgent(BaseAgent):
     """
-    计划 Agent
+    Planning Agent
 
-    增量式规划策略，每次只决定下一步
+    Incremental planning strategy, decides only the next step each time
     """
 
     def __init__(self, llm_client, temperature: float = 0.6, top_p: float = 0.95):
         """
-        初始化计划 Agent
+        Initialize Planning Agent
 
         Args:
-            llm_client: LLMClient 实例
-            temperature: 温度参数
-            top_p: 采样参数
+            llm_client: LLMClient instance
+            temperature: Temperature parameter
+            top_p: Sampling parameter
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -60,7 +60,7 @@ class PlanningAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "PlanningAgent":
-        """从配置创建Agent"""
+        """Create Agent from config"""
         return cls(
             llm_client=llm_client,
             temperature=config.PLANNING_AGENT_TEMPERATURE,
@@ -69,27 +69,27 @@ class PlanningAgent(BaseAgent):
 
     def run(self, input_data: PlanningInput) -> PlanningOutput:
         """
-        执行任务规划
+        Execute task planning
 
         Args:
-            input_data: PlanningInput 实例
+            input_data: PlanningInput instance
 
         Returns:
-            PlanningOutput 实例
+            PlanningOutput instance
         """
         prompt = self._build_prompt(input_data)
 
-        # 记录LLM输入
+        # Log LLM input
         logger.debug("="*80)
-        logger.debug("📥 Planning Agent LLM Input:")
+        logger.debug("Planning Agent LLM Input:")
         logger.debug(prompt)
         logger.debug("="*80)
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # 记录LLM原始响应
+        # Log LLM raw response
         logger.debug("="*80)
-        logger.debug("📤 Planning Agent LLM Raw Response:")
+        logger.debug("Planning Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -97,15 +97,15 @@ class PlanningAgent(BaseAgent):
 
     def _build_prompt(self, input_data: PlanningInput) -> str:
         """
-        构建 prompt
+        Build prompt
 
         Args:
-            input_data: PlanningInput 实例
+            input_data: PlanningInput instance
 
         Returns:
-            完整 prompt
+            Complete prompt
         """
-        # 格式化已完成任务
+        # Format completed tasks
         completed_tasks = [
             {
                 "type": task.type.value,
@@ -117,7 +117,7 @@ class PlanningAgent(BaseAgent):
         ]
         completed_tasks_str = format_completed_tasks(completed_tasks)
 
-        # 格式化当前待办任务（重要！）
+        # Format current pending task (important!)
         current_task_str = "(none)"
         if input_data.insight_doc.current_task:
             current_task_str = f"Currently executing: {input_data.insight_doc.current_task}"
@@ -134,7 +134,7 @@ class PlanningAgent(BaseAgent):
                     # New format (with detailed information)
                     lines.append(f"{i}. Topic: {node_info.get('context', 'N/A')}")
                     lines.append(f"   Keywords: {', '.join(node_info.get('keywords', []))}")
-                    # ✅ Fixed: Do NOT truncate summary - pass complete content
+                    # Do NOT truncate summary - pass complete content
                     summary = node_info.get('summary', '')
                     lines.append(f"   Summary: {summary}")
             new_memory_str = "\n".join(lines)
@@ -157,13 +157,13 @@ class PlanningAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> PlanningOutput:
         """
-        解析 LLM 响应
+        Parse LLM response
 
         Args:
-            response: LLM 响应字符串
+            response: LLM response string
 
         Returns:
-            PlanningOutput 实例
+            PlanningOutput instance
         """
         try:
             data = self._parse_json_response(response)
@@ -171,7 +171,7 @@ class PlanningAgent(BaseAgent):
             task_goal = data.get("task_goal", "")
             current_task = data.get("current_task", "")
 
-            # ✅ 修复：将字典列表转换为 CompletedTask 对象列表
+            # Convert dictionary list to CompletedTask object list
             completed_tasks_data = data.get("completed_tasks", [])
             completed_tasks = [
                 CompletedTask(

@@ -1,5 +1,7 @@
 """
-Insight Doc - 任务状态层
+Insight Doc - Task State Layer
+
+Manages task planning and execution state using incremental planning strategy.
 """
 
 from enum import Enum
@@ -8,29 +10,29 @@ from dataclasses import dataclass, field
 
 
 class TaskType(Enum):
-    """任务类型枚举"""
-    NORMAL = "NORMAL"                   # 普通子任务
-    CROSS_VALIDATE = "CROSS_VALIDATE"   # 交叉验证任务（冲突解决）
+    """Task type enumeration."""
+    NORMAL = "NORMAL"
+    CROSS_VALIDATE = "CROSS_VALIDATE"
 
 
 @dataclass
 class CompletedTask:
     """
-    已完成任务的记录
+    Record of a completed task.
 
     Attributes:
-        type: 任务类型（NORMAL 或 CROSS_VALIDATE）
-        description: 任务详细描述
-        status: 执行状态（"成功" 或 "失败"）
-        context: 1-2句话的浓缩总结
+        type: Task type (NORMAL or CROSS_VALIDATE)
+        description: Detailed task description
+        status: Execution status ("success" or "failure")
+        context: Condensed 1-2 sentence summary
     """
     type: TaskType
     description: str
-    status: str  # "成功" 或 "失败"
-    context: str  # 1-2句话的浓缩总结
+    status: str
+    context: str
 
     def to_dict(self) -> Dict[str, Any]:
-        """导出为字典（用于持久化）"""
+        """Export as dictionary for persistence."""
         return {
             "type": self.type.value,
             "description": self.description,
@@ -40,7 +42,7 @@ class CompletedTask:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "CompletedTask":
-        """从字典创建 CompletedTask"""
+        """Create CompletedTask from dictionary."""
         return CompletedTask(
             type=TaskType(data["type"]),
             description=data["description"],
@@ -52,17 +54,17 @@ class CompletedTask:
 @dataclass
 class InsightDoc:
     """
-    Insight Doc 主类
+    Insight Doc main class - core data structure for task state layer.
 
-    任务状态层的核心数据结构，采用增量式规划理念：
-    - current_task 要么为空字符串（无任务），要么是单个任务字符串
-    - 不维护优先级队列，每次只决定下一步
+    Uses incremental planning:
+    - current_task is either empty string (no task) or a single task string
+    - No priority queue maintained; decides next step each iteration
 
     Attributes:
-        doc_id: 唯一标识符（用于临时存储映射）
-        task_goal: 用户原始问题
-        completed_tasks: 已完成的子任务列表
-        current_task: 当前待办任务（空字符串表示无任务）
+        doc_id: Unique identifier for temporary storage mapping
+        task_goal: Original user question
+        completed_tasks: List of completed subtasks
+        current_task: Current pending task (empty string means no task)
     """
     doc_id: str
     task_goal: str
@@ -76,15 +78,7 @@ class InsightDoc:
         status: str,
         context: str
     ):
-        """
-        添加已完成的任务
-
-        Args:
-            task_type: 任务类型
-            description: 任务描述
-            status: 执行状态
-            context: 浓缩总结
-        """
+        """Add a completed task to the list."""
         task = CompletedTask(
             type=task_type,
             description=description,
@@ -94,45 +88,19 @@ class InsightDoc:
         self.completed_tasks.append(task)
 
     def set_current_task(self, task: str):
-        """
-        设置当前任务
-
-        Args:
-            task: 任务描述字符串（空字符串表示无任务）
-        """
+        """Set the current task (empty string for no task)."""
         self.current_task = task
 
     def clear_current_task(self):
-        """清空当前任务"""
+        """Clear the current task."""
         self.current_task = ""
 
     def has_current_task(self) -> bool:
-        """
-        检查是否有当前任务
-
-        Returns:
-            有当前任务返回 True，否则返回 False
-        """
+        """Check if there is a current task."""
         return bool(self.current_task)
 
-    def is_all_completed_successfully(self) -> bool:
-        """
-        检查所有已完成任务是否都成功
-
-        Returns:
-            全部成功返回 True，否则返回 False
-        """
-        if not self.completed_tasks:
-            return False
-        return all(task.status == "成功" for task in self.completed_tasks)
-
     def to_dict(self) -> Dict[str, Any]:
-        """
-        导出为字典（用于持久化）
-
-        Returns:
-            包含所有字段的字典
-        """
+        """Export as dictionary for persistence."""
         return {
             "doc_id": self.doc_id,
             "task_goal": self.task_goal,
@@ -142,15 +110,7 @@ class InsightDoc:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "InsightDoc":
-        """
-        从字典创建 InsightDoc
-
-        Args:
-            data: 包含所有字段的字典
-
-        Returns:
-            InsightDoc 实例
-        """
+        """Create InsightDoc from dictionary."""
         return InsightDoc(
             doc_id=data["doc_id"],
             task_goal=data["task_goal"],
@@ -161,29 +121,8 @@ class InsightDoc:
             current_task=data.get("current_task", "")
         )
 
-    def get_summary(self) -> str:
-        """
-        获取任务状态摘要
-
-        Returns:
-            格式化的摘要字符串
-        """
-        summary_lines = [
-            f"任务目标: {self.task_goal}",
-            f"已完成任务数: {len(self.completed_tasks)}",
-            f"当前任务: {self.current_task if self.current_task else '（无）'}"
-        ]
-
-        if self.completed_tasks:
-            success_count = sum(
-                1 for task in self.completed_tasks if task.status == "成功"
-            )
-            summary_lines.append(f"成功/失败: {success_count}/{len(self.completed_tasks) - success_count}")
-
-        return "\n".join(summary_lines)
-
     def __repr__(self) -> str:
-        """返回对象的字符串表示"""
+        """Return string representation."""
         return (
             f"InsightDoc(doc_id={self.doc_id}, "
             f"completed={len(self.completed_tasks)}, "

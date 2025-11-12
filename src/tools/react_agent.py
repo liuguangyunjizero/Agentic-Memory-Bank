@@ -1,26 +1,26 @@
 """
 ReAct Agent
 
-多轮对话Agent，支持Think-Act-Observe循环和工具调用。
+Multi-turn conversational Agent supporting Think-Act-Observe loops and tool calling.
 """
 
 import logging
 import json
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
 class MultiTurnReactAgent:
     """
-    多轮ReAct Agent
+    Multi-turn ReAct Agent
 
-    特点：
-    - Think-Act-Observe循环
-    - 工具调用（search, visit, deep_retrieval）
-    - 停止条件：<answer>标签
-    - 上下文管理：Token计数 + 超限处理
+    Features:
+    - Think-Act-Observe loop
+    - Tool calling (search, visit, deep_retrieval)
+    - Stop condition: <answer> tag
+    - Context management: Token counting + overflow handling
     """
 
     def __init__(
@@ -29,21 +29,21 @@ class MultiTurnReactAgent:
         tools: Dict[str, Any],
         system_message: str,
         max_iterations: int = 60,
-        max_context_tokens: int = 32000,
+        max_context_tokens: int = 128000,
         temperature: float = 0.6,
         top_p: float = 0.95
     ):
         """
-        初始化ReAct Agent
+        Initialize ReAct Agent
 
         Args:
-            llm_client: LLMClient 实例
-            tools: 工具字典 {tool_name: tool_instance}
+            llm_client: LLMClient instance
+            tools: Tool dictionary {tool_name: tool_instance}
             system_message: System Prompt
-            max_iterations: 最大迭代次数
-            max_context_tokens: 最大上下文Token数
-            temperature: 温度参数
-            top_p: 采样参数
+            max_iterations: Maximum number of iterations
+            max_context_tokens: Maximum context token count
+            temperature: Temperature parameter
+            top_p: Sampling parameter
         """
         self.llm_client = llm_client
         self.tools = tools
@@ -61,37 +61,36 @@ class MultiTurnReactAgent:
 
     def run(self, question: str) -> Dict[str, Any]:
         """
-        执行ReAct循环
+        Execute ReAct loop
 
         Args:
-            question: 用户问题（可能已被Adapter增强过）
+            question: User question (may have been enhanced by Adapter)
 
         Returns:
-            执行结果：{
-                "question": str,
-                "prediction": str,  # 提取的答案
-                "messages": List,   # 完整轨迹
-                "termination": str, # 终止原因
-                "iterations_used": int  # 使用的迭代次数
-            }
+            Execution result: {"messages": List[Dict[str, str]]}
+            messages: Complete conversation trace, including all system/user/assistant messages
         """
         logger.info(f"Starting ReAct loop (task length: {len(question)} characters)")
-        # Initial task display handled by main.py
 
-        # 1. 初始化
+        # Display initial input (task + memory) - only once at start
+        print("\n" + "=" * 80)
+        print("🤖 ReAct Agent - Input")
+        print("=" * 80)
+        print(question)
+        print("=" * 80)
+
+        # 1. Initialize
         messages = [
             {"role": "system", "content": self.system_message},
             {"role": "user", "content": question}
         ]
-        full_trajectory = messages.copy()
         iterations_left = self.max_iterations
 
-        # 2. 主循环
+        # 2. Main loop
         while iterations_left > 0:
-            iterations_used = self.max_iterations - iterations_left
             iterations_left -= 1
 
-            # 2.1 调用LLM
+            # 2.1 Call LLM
             try:
                 response = self.llm_client.call(
                     messages,
@@ -100,15 +99,9 @@ class MultiTurnReactAgent:
                 )
             except Exception as e:
                 logger.error(f"LLM call failed: {str(e)}")
-                return {
-                    "question": question,
-                    "prediction": "Error: LLM call failed",
-                    "messages": full_trajectory,
-                    "termination": "error",
-                    "iterations_used": iterations_used
-                }
+                return {"messages": messages}
 
-            # 2.2 清理意外的tool_response标签
+            # 2.2 Clean unexpected tool_response tags
             # Note: stop parameter should prevent this, but DeepSeek API may not fully honor it
             # This is a safety check to ensure clean responses
             if '<tool_response>' in response:
@@ -121,91 +114,66 @@ class MultiTurnReactAgent:
                 logger.debug(f"Context: ...{response[max(0, pos-50):min(len(response), pos+50)]}...")
                 response = response[:pos]
 
-            # 2.3 打印LLM响应（ReAct原始输出）
-            # (Response display handled by main.py patch)
+            # 2.3 Display cleaned LLM output
+            print("\n" + "=" * 80)
+            print("🤖 ReAct Agent - Output")
+            print("=" * 80)
+            print(response.strip())
+            print("=" * 80)
 
-            # 2.4 添加到消息历史
+            # 2.4 Add to message history
             messages.append({"role": "assistant", "content": response.strip()})
-            full_trajectory.append({"role": "assistant", "content": response.strip()})
 
-            # 2.5 检查工具调用
+            # 2.5 Check for tool calls
             if '<tool_call>' in response and '</tool_call>' in response:
                 tool_result = self._handle_tool_call(response)
-
-                # 打印工具响应
-                # (Tool response display handled by main.py or logged to file)
                 messages.append({"role": "user", "content": tool_result})
-                full_trajectory.append({"role": "user", "content": tool_result})
 
-            # 2.6 检查答案
+            # 2.6 Check if completed (answer tag indicates task completion)
             elif '<answer>' in response and '</answer>' in response:
-                answer = self._extract_answer(response)
-                if answer:
-                    # (Answer obtained - logged)
-                    logger.info(f"Answer obtained: {answer[:300]}{'...' if len(answer) > 300 else ''}")
-                    return {
-                        "question": question,
-                        "prediction": answer,
-                        "messages": full_trajectory,
-                        "termination": "answer",
-                        "iterations_used": iterations_used + 1
-                    }
+                logger.debug("Task completed with answer tag")
+                return {"messages": messages}
 
-            # 2.7 Token计数和上下文管理
-            token_count = self.llm_client.count_tokens(str(messages))
+            # 2.7 Token counting and context management
+            token_count = self.llm_client.count_tokens(messages)
 
-            # 2.8 超限处理
+            # 2.8 Overflow handling
             if token_count > self.max_context_tokens:
                 logger.warning(f"Token limit exceeded: {token_count} > {self.max_context_tokens}")
 
-                # 强制要求生成答案
+                # Force answer generation
                 force_answer_msg = (
                     "You have now reached the maximum context length. "
                     "Please provide your final answer immediately using the <answer></answer> format."
                 )
                 messages.append({"role": "user", "content": force_answer_msg})
-                full_trajectory.append({"role": "user", "content": force_answer_msg})
 
                 response = self.llm_client.call(messages)
                 messages.append({"role": "assistant", "content": response.strip()})
-                full_trajectory.append({"role": "assistant", "content": response.strip()})
 
-                answer = self._extract_answer(response)
-                return {
-                    "question": question,
-                    "prediction": answer if answer else "No answer (token limit)",
-                    "messages": full_trajectory,
-                    "termination": "token_limit",
-                    "iterations_used": iterations_used + 1
-                }
+                logger.debug("Task terminated due to token limit")
+                return {"messages": messages}
 
-        # 3. 超出迭代次数
+        # 3. Exceeded maximum iterations
         logger.warning(f"Reached maximum iterations: {self.max_iterations}")
-        answer = self._extract_answer(messages[-1]['content']) if messages else None
-        return {
-            "question": question,
-            "prediction": answer if answer else "No answer found",
-            "messages": full_trajectory,
-            "termination": "max_iterations",
-            "iterations_used": self.max_iterations
-        }
+        return {"messages": messages}
 
     def _handle_tool_call(self, response: str) -> str:
         """
-        处理工具调用
+        Handle tool calls
 
         Args:
-            response: LLM响应（包含<tool_call>标签）
+            response: LLM response (containing <tool_call> tag)
 
         Returns:
-            工具响应（包含<tool_response>标签）
+            Tool response (containing <tool_response> tag)
         """
         try:
-            # 1. 提取JSON
+            # 1. Extract JSON
             tool_call_str = response.split('<tool_call>')[1].split('</tool_call>')[0]
             tool_call = json.loads(tool_call_str.strip())
 
-            # 2. 执行工具
+            # 2. Execute tool
             tool_name = tool_call.get('name', '')
             tool_args = tool_call.get('arguments', {})
 
@@ -217,35 +185,28 @@ class MultiTurnReactAgent:
                 result = f"Error: Tool '{tool_name}' not found. Available tools: {list(self.tools.keys())}"
                 logger.error(result)
 
-            return f"<tool_response>{result}</tool_response>"
+            tool_response = f"<tool_response>{result}</tool_response>"
+
+            # Display tool response in console
+            print(tool_response)
+
+            return tool_response
 
         except json.JSONDecodeError as e:
             error_msg = f"Error: Invalid JSON in tool call - {str(e)}"
             logger.error(error_msg)
-            return f"<tool_response>{error_msg}</tool_response>"
+            tool_response = f"<tool_response>{error_msg}</tool_response>"
+            print(tool_response)
+            return tool_response
         except Exception as e:
             error_msg = f"Error: Tool call failed - {str(e)}"
             logger.error(error_msg)
-            return f"<tool_response>{error_msg}</tool_response>"
-
-    def _extract_answer(self, response: str) -> Optional[str]:
-        """
-        提取答案
-
-        Args:
-            response: LLM响应
-
-        Returns:
-            提取的答案，如果没有则返回 None
-        """
-        try:
-            answer = response.split('<answer>')[1].split('</answer>')[0].strip()
-            return answer
-        except (IndexError, AttributeError):
-            return None
+            tool_response = f"<tool_response>{error_msg}</tool_response>"
+            print(tool_response)
+            return tool_response
 
     def __repr__(self) -> str:
-        """返回Agent摘要"""
+        """Return Agent summary"""
         return (
             f"MultiTurnReactAgent("
             f"tools={list(self.tools.keys())}, "

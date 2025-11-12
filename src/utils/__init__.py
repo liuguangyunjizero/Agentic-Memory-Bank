@@ -1,7 +1,1 @@
-"""
-工具模块
-
-包含通用工具函数：
-- LLM 客户端
-- 文件工具
-"""
+"""Utility modules including LLM client."""

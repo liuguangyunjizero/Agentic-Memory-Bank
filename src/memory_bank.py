@@ -1,7 +1,7 @@
 """
-Agentic Memory Bank 核心类
+Agentic Memory Bank Core Class
 
-整合所有组件，提供完整的记忆管理功能。
+Integrates all components to provide complete memory management functionality.
 """
 
 import logging
@@ -26,7 +26,6 @@ from src.tools.search_tool import SearchTool
 from src.tools.visit_tool import VisitTool
 from src.tools.react_agent import MultiTurnReactAgent
 from src.utils.llm_client import LLMClient
-from src.utils.file_utils import FileUtils
 from src.config import Config
 from src.prompts.agent_prompts import REACT_SYSTEM_PROMPT
 
@@ -34,41 +33,37 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryBank:
-    """Agentic Memory Bank主类"""
+    """Agentic Memory Bank main class"""
 
     def __init__(self, config: Config = None):
         """
-        初始化Memory Bank
+        Initialize Memory Bank
 
         Args:
-            config: 配置对象（可选，不提供则使用默认配置）
+            config: Configuration object (optional, uses default if not provided)
         """
         logger.info("Initializing Agentic Memory Bank...")
 
-        # 初始化配置
+        # Initialize configuration
         self.config = config or Config()
 
-        # 初始化存储层
+        # Initialize storage layer
         self.query_graph = QueryGraph()
         self.interaction_tree = InteractionTree()
-        self.insight_doc = None  # 每次任务单独创建
+        self.insight_doc = None  # Created separately for each task
 
-        # 初始化工具
+        # Initialize tools
         self.llm_client = LLMClient.from_config(self.config)
-        self.file_utils = FileUtils(
-            temp_dir=self.config.TEMP_DIR,
-            storage_dir=self.config.STORAGE_DIR
-        )
 
-        # 初始化硬编码模块
+        # Initialize hardcoded modules
         self.embedding_module = EmbeddingModule.from_config(self.config)
         self.retrieval_module = RetrievalModule(
             alpha=self.config.RETRIEVAL_ALPHA,
             k=self.config.RETRIEVAL_K
         )
-        self.graph_ops = GraphOperations(self.query_graph)
+        self.graph_ops = GraphOperations(self.query_graph, self.interaction_tree)
 
-        # 初始化Agent
+        # Initialize Agents
         self.classification_agent = ClassificationAgent.from_config(
             self.llm_client, self.config
         )
@@ -77,21 +72,27 @@ class MemoryBank:
         self.integration_agent = IntegrationAgent.from_config(self.llm_client, self.config)
         self.planning_agent = PlanningAgent.from_config(self.llm_client, self.config)
 
-        # 初始化Interface层
-        self.deep_retrieval_tool = DeepRetrievalTool(self.interaction_tree, self.file_utils)
+        # Initialize Interface layer
+        self.deep_retrieval_tool = DeepRetrievalTool(self.interaction_tree)
 
-        # 搜索工具：如果配置了Serper API key，使用真实搜索
+        # Search tool: Use real search if Serper API key is configured
         search_api_key = self.config.SERPER_API_KEY
         if not search_api_key or search_api_key == "your-serper-api-key-here":
             raise ValueError(
-                "未配置Serper API key。请在.env文件中设置SERPER_API_KEY。\n"
-                "注册地址：https://serper.dev/"
+                "Serper API key not configured. Please set SERPER_API_KEY in .env file.\n"
+                "Sign up at: https://serper.dev/"
             )
 
         self.search_tool = SearchTool(search_api_key=search_api_key)
 
-        # Visit工具：使用Jina Reader API（必需）
+        # Visit tool: Use Jina Reader API (required)
         jina_api_key = self.config.JINA_API_KEY
+        if not jina_api_key or jina_api_key == "your-jina-api-key-here":
+            raise ValueError(
+                "Jina API key not configured. Please set JINA_API_KEY in .env file.\n"
+                "Sign up at: https://jina.ai/"
+            )
+
         self.visit_tool = VisitTool(
             llm_client=self.llm_client,
             jina_api_key=jina_api_key,
@@ -99,10 +100,10 @@ class MemoryBank:
             top_p=self.config.VISIT_EXTRACTION_TOP_P
         )
 
-        # 初始化Adapter
-        self.adapter = MemoryBankAdapter(self, self.retrieval_module, self.file_utils)
+        # Initialize Adapter
+        self.adapter = MemoryBankAdapter(self, self.retrieval_module)
 
-        # 初始化ReAct Agent
+        # Initialize ReAct Agent
         tools = {
             "deep_retrieval": self.deep_retrieval_tool,
             "search": self.search_tool,
@@ -122,39 +123,50 @@ class MemoryBank:
 
     def run(self, user_input: str) -> Dict[str, Any]:
         """
-        执行单次任务
+        Execute a single task
 
         Args:
-            user_input: 用户输入（可能包含上下文+问题）
+            user_input: User input (may contain context + question)
 
         Returns:
-            任务结果：{
+            Task result: {
                 "answer": str,
                 "insight_doc": dict,
                 "stats": dict
             }
         """
         logger.info("=" * 60)
-        logger.info(f"Starting new task: {user_input[:300]}{'...' if len(user_input) > 300 else ''}")
+        logger.info(f"Starting new task: {user_input}")
         logger.info("=" * 60)
 
         try:
-            # 1. 初始化阶段
+            # Use simplified input parsing
+            text_context, question, is_context_only = self._parse_user_input_simple(user_input)
+
+            if is_context_only:
+                # Context loading only, skip full task workflow
+                print("\n" + "=" * 80)
+                print("  Loading Context Only Mode")
+                print("=" * 80)
+                result = self._load_context_only(text_context)
+                return result
+
+            # 1. Initialization phase (normal task workflow)
             print("\n" + "=" * 80)
             print("  Memory Bank Initialized")
             print("=" * 80)
             enhanced_prompt = self._initialize(user_input)
             iterations = 0
 
-            # 显示任务目标和初始状态
+            # Display task goal and initial state
             if self.insight_doc:
                 print(f"Task: {self.insight_doc.task_goal}")
                 print(f"Current Subtask: {self.insight_doc.current_task if self.insight_doc.current_task else '(none)'}")
                 print("=" * 80)
 
-            # 2. 执行循环
+            # 2. Execution loop
             answer = None
-            last_react_result = None  # 保存最后一次ReAct结果
+            last_react_result = None  # Save last ReAct result
             max_iterations = self.config.MAX_LLM_CALL_PER_RUN
             while not self._should_terminate() and iterations < max_iterations:
                 iterations += 1
@@ -162,52 +174,36 @@ class MemoryBank:
                 print(f"  Iteration {iterations}")
                 print("=" * 80)
 
-                # 显示当前任务状态（简化）
+                # Display current task status (simplified)
                 if self.insight_doc and self.insight_doc.current_task:
                     print(f"Current: {self.insight_doc.current_task}")
                     print(f"Completed: {len(self.insight_doc.completed_tasks)} | Memory nodes: {self.query_graph.get_node_count()}")
 
-                # 2.1 ReAct执行
+                # 2.1 ReAct execution
                 react_result = self.react_agent.run(enhanced_prompt)
-                last_react_result = react_result  # 保存结果
-                answer = react_result.get("prediction", "")
 
-                # 2.2 上下文拦截：提取搜索结果并转化为记忆
-                # 检查是否是最终回答任务
-                current_task = self.insight_doc.current_task if self.insight_doc else ""
-                is_final_answer_task = "根据现有相关记忆直接回答问题" in current_task or "根据现有记忆回答问题" in current_task
-
+                # 2.2 Context interception: Convert all valuable content to memory
                 if self.insight_doc and self.insight_doc.current_task:
-                    # 检查是否有工具调用（通过检查消息历史）
                     messages = react_result.get("messages", [])
-                    has_tool_calls = any(
-                        msg.get("role") == "assistant" and "<tool_call>" in msg.get("content", "")
-                        for msg in messages
-                    )
 
-                    tool_responses = self._extract_tool_responses(messages)
+                    # Extract complete context (including thoughts, tool calls, answers and system messages)
+                    full_context = "\n\n".join([
+                        f"[{m.get('role', 'unknown')}]:\n{m.get('content', '')}"
+                        for m in messages
+                        if m.get('content', '').strip()
+                    ])
 
-                    if has_tool_calls and not is_final_answer_task:
-                        # 有工具调用，且不是最终回答任务 - 进入记忆处理流程
-                        # (No console output - details logged to file)
+                    # Check if there's valuable content
+                    has_valuable_content = bool(full_context and full_context.strip())
 
-                        # 提取完整上下文（包括思考过程、工具调用和工具响应）
-                        # Classification Agent 需要完整上下文来准确分类和理解推理过程
-                        full_context = self._extract_full_context(messages)
-
-                        # 调用上下文拦截机制
+                    if has_valuable_content:
                         try:
-                            # 判断任务类型（参考 REQUIREMENTS_FINAL.md 第4.2节）
+                            # Determine task type
                             has_conflict = self.adapter.has_pending_conflicts()
-                            if has_conflict:
-                                task_type = "CROSS_VALIDATE"
-                            else:
-                                task_type = "NORMAL"
+                            task_type = "CROSS_VALIDATE" if has_conflict else "NORMAL"
 
-                            # intercept_context 内部会调用 Planning Agent 更新 insight_doc
-                            # 包括 completed_tasks 和 pending_tasks
+                            # Save all valuable content (direct answers, tool calls, final answers all saved)
                             self.adapter.intercept_context(full_context, task_type, self.insight_doc)
-                            # (Memory processing complete - logged to file)
 
                         except Exception as e:
                             print(f"Error: {str(e)}")
@@ -215,85 +211,17 @@ class MemoryBank:
                             import traceback
                             traceback.print_exc()
 
-                    elif is_final_answer_task and react_result.get("termination") == "answer":
-                        # 最终回答任务且有答案 - 但不能直接认为完成，需要Planning Agent验证
-                        answer = react_result.get("prediction", "")
-
-                        # 调用Planning Agent验证答案
-                        from src.agents.planning_agent import PlanningInput
-                        planning_output = self.planning_agent.run(PlanningInput(
-                            insight_doc=self.insight_doc,
-                            new_memory_nodes=[
-                                {
-                                    "id": "final_answer",
-                                    "context": "Final answer candidate",
-                                    "keywords": ["answer", "final"],
-                                    "summary": answer
-                                }
-                            ],
-                            conflict_notification=None
-                        ))
-
-                        # 更新insight_doc
-                        self.insight_doc.task_goal = planning_output.task_goal
-                        self.insight_doc.completed_tasks = planning_output.completed_tasks
-                        self.insight_doc.current_task = planning_output.current_task
-
-                        # 如果Planning Agent判断没有后续任务了，才真正结束
-                        if not self.insight_doc.current_task:
-                            print("\n[DONE] Task complete - Final answer obtained and verified")
-                            break
-
-                    elif not tool_responses:
-                        # 没有工具调用，但ReAct返回了答案 - 直接标记任务完成
-                        # (ReAct provided direct answer without tools)
-
-                        if self.insight_doc.current_task:
-                            # 保存答案到外层变量（从prediction字段获取）
-                            answer = react_result.get("prediction", "")
-
-                            # 标记任务完成
-                            self.insight_doc.current_task = ""
-                            completed_task = CompletedTask(
-                                type=TaskType.NORMAL,
-                                description=current_task,
-                                status="Success",
-                                context=f"直接回答: {answer[:200]}"
-                            )
-                            self.insight_doc.completed_tasks.append(completed_task)
-
-                            # 如果是最终回答任务，直接结束循环
-                            if is_final_answer_task:
-                                print("\n[DONE] Task complete - Final answer obtained")
-                                break
-
-                            # 调用Planning Agent检查是否还有其他任务
-                            from src.agents.planning_agent import PlanningInput
-                            planning_output = self.planning_agent.run(PlanningInput(
-                                insight_doc=self.insight_doc,
-                                new_memory_nodes=[],  # 没有生成记忆节点
-                                conflict_notification=None
-                            ))
-
-                            # 更新insight_doc
-                            self.insight_doc.current_task = planning_output.current_task
-
-                # 2.3 检查是否有待办任务（如果没有，说明任务完成）
+                # 2.3 Check if there are pending tasks (if none, task is complete)
                 if not self.insight_doc or not self.insight_doc.current_task:
                     print("\n[DONE] All tasks complete")
                     break
 
-                # 2.4 如果ReAct已经给出答案且无更多待办任务，结束
-                if react_result.get("termination") == "answer" and not self.insight_doc.current_task:
-                    print("\n[DONE] Task complete")
-                    break
-
-                # 2.5 增强下一轮Prompt（基于新的任务状态）
+                # 2.4 Enhance next round Prompt (based on new task state)
                 if self.insight_doc.current_task:
                     print(f"\nNext: {self.insight_doc.current_task}")
                 enhanced_prompt = self.adapter.enhance_prompt(self.insight_doc)
 
-            # 3. 统计信息
+            # 3. Statistics
             final_insight_doc = self.insight_doc.to_dict() if self.insight_doc else None
 
             stats = {
@@ -305,22 +233,16 @@ class MemoryBank:
                 "current_task": self.insight_doc.current_task if self.insight_doc else ""
             }
 
-            logger.info("\n" + "=" * 60)
-            logger.info("Task completed")
-            logger.info(f"Stats: {stats}")
-            logger.info("=" * 60)
+            logger.debug("\n" + "=" * 60)
+            logger.debug("Task completed")
+            logger.debug(f"Stats: {stats}")
+            logger.debug("=" * 60)
 
-            # 显示完整Memory Bank记忆
-            self._display_complete_memory()
-
-            result = {
-                "answer": answer or "Task finished but no explicit answer",
+            # Return simplified result (mainly for debugging and testing)
+            return {
                 "insight_doc": final_insight_doc,
-                "stats": stats,
-                "react_messages": last_react_result.get("messages", []) if last_react_result else []
+                "stats": stats
             }
-
-            return result
 
         except Exception as e:
             logger.error(f"Task execution failed: {str(e)}")
@@ -328,88 +250,63 @@ class MemoryBank:
             traceback.print_exc()
             raise
 
-        finally:
-            if self.insight_doc is not None:
-                self.adapter.cleanup_temp_storage()
-                self.query_graph.clear()
-                self.retrieval_module.mark_index_dirty()
-                self.interaction_tree.clear()
-                self.insight_doc = None
-
-    def _initialize(self, user_input: str) -> str:
+    def _load_context_only(self, text_context: str) -> Dict[str, Any]:
         """
-        初始化阶段
-
-        流程：
-        1. 解析用户输入
-        2. 多模态临时存储
-        3. 分类→结构化→检索→分析→建边
-        4. 规划下一步
-        5. 增强Prompt
+        Load context only, without executing full task workflow
 
         Args:
-            user_input: 用户输入
+            text_context: Context text to load
 
         Returns:
-            增强后的Prompt
+            Loading result: {
+                "answer": str,
+                "stats": dict
+            }
         """
-        # 1. 解析用户输入
-        text_context, question = self._parse_user_input(user_input)
+        logger.info("Loading context only mode")
+
+        # Parse user input (actually already have text_context, but for consistency)
         doc_id = str(uuid.uuid4())
 
-        # 2. 判断是否有文本上下文
+        # Check if there's text context
         if not text_context:
-            # 跳到规划
-            self.insight_doc = InsightDoc(
-                doc_id=doc_id,
-                task_goal=question,
-                completed_tasks=[],
-                current_task=""
-            )
-            planning_output = self.planning_agent.run(PlanningInput(
-                insight_doc=self.insight_doc
-            ))
-            self.insight_doc = InsightDoc(
-                doc_id=doc_id,
-                task_goal=planning_output.task_goal,
-                completed_tasks=planning_output.completed_tasks,
-                current_task=planning_output.current_task
-            )
-            return self.adapter.enhance_prompt(self.insight_doc)
+            return {"answer": "No context provided", "stats": {}}
 
-        # 3. 分类/聚类
+        # 1. Classification/Clustering (same as normal workflow)
+        print("\n[Classification] Calling Classification Agent...")
         classification_output = self.classification_agent.run(ClassificationInput(
             context=text_context,
-            task_goal=question
+            task_goal="Context loading"  # Virtual task goal
         ))
 
-        # 5-9. 对每个cluster进行处理
+        # 2-3. Process each cluster (same as normal workflow, but no planning)
         new_nodes = []
-        conflicts = []
+        all_conflicts = []  # Collect all conflicts
 
         for i, cluster in enumerate(classification_output.clusters):
 
-            # 5. 结构化
+            # 4. Structuring
+            print(f"\n  [{i+1}/{len(classification_output.clusters)}] Calling Structure Agent...")
             structure_output = self.structure_agent.run(StructureInput(
-                content=cluster.content,  # ✅ 修复：使用 cluster.content（原始文本）
+                content=cluster.content,
                 context=cluster.context,
                 keywords=cluster.keywords,
-                current_task=question  # 使用用户问题作为当前任务参考
+                current_task="Context loading"  # Virtual current task
             ))
 
-            # 6. 组装节点
+            # 5. Assemble node and add to graph
             node = self._create_node(
                 summary=structure_output.summary,
                 context=cluster.context,
-                keywords=cluster.keywords  # 使用cluster的keywords，不是structure_output
+                keywords=cluster.keywords
             )
             self.graph_ops.add_node(node)
             new_nodes.append(node)
 
-            # ✅ 优化：标记索引为脏（索引会在下次检索时自动重建）
+            # 6. Mark index as dirty (rebuild on next retrieval)
             self.retrieval_module.mark_index_dirty()
 
-            # 7. 检索相似节点
+            # 7. Retrieve similar nodes (for analyzing potential conflicts)
             candidates = self.retrieval_module.hybrid_retrieval(
                 query_embedding=node.embedding,
                 query_keywords=node.keywords,
@@ -417,7 +314,7 @@ class MemoryBank:
                 exclude_ids={node.id}
             )
 
-            # 8. 分析关系
+            # 8. Analyze relationships (if candidate nodes found)
             if candidates:
                 from src.agents.analysis_agent import AnalysisInput, NodeInfo
                 analysis_input = AnalysisInput(
@@ -441,81 +338,113 @@ class MemoryBank:
                 )
                 analysis_output = self.analysis_agent.run(analysis_input)
 
-                # 处理关系
+                # Process relationships (record conflict info, add related edges)
                 for rel in analysis_output.relationships:
                     if rel.relationship == "conflict":
-                        conflicts.append({
-                            "node1": node.id,
-                            "node2": rel.existing_node_id,
-                            "description": rel.conflict_description
-                        })
-                        logger.info(f"    ⚠️  Conflict detected: {rel.conflict_description[:150]}{'...' if len(rel.conflict_description or '') > 150 else ''}")
+                        # Record conflict info (if config enables conflict reporting)
+                        if self.config.REPORT_CONFLICTS_IN_CONTEXT_LOADING:
+                            all_conflicts.append({
+                                "new_node_id": node.id,
+                                "existing_node_id": rel.existing_node_id,
+                                "description": rel.conflict_description,
+                                "new_context": node.context,
+                                "existing_context": self.query_graph.get_node(rel.existing_node_id).context
+                            })
                     elif rel.relationship == "related":
                         self.graph_ops.add_edge(node.id, rel.existing_node_id)
 
-            # 9. 创建Interaction Tree Entry（保存完整内容）
+            # 9. Create Interaction Tree Entry (save complete content)
             self.interaction_tree.add_entry(node.id, cluster.content)
 
-        # 10. 规划
-        conflict_notification = None
-        if conflicts:
-            conflict_notification = ConflictNotification(
-                conflicting_node_ids=[conflicts[0]["node1"], conflicts[0]["node2"]],
-                conflict_description=conflicts[0]["description"]
-            )
-            # ✅ 修复：将冲突添加到adapter队列（与_handle_normal_task保持一致）
-            # 确保执行循环中has_pending_conflicts()能正确识别冲突状态
-            for conflict in conflicts:
-                pair = [conflict["node1"], conflict["node2"]]
-                if pair not in self.adapter._pending_conflicts:
-                    self.adapter._pending_conflicts.append(pair)
-            logger.info(f"  ⚠️  Conflict detected, cross-validation needed")
+        # Statistics
+        stats = {
+            "nodes_added": len(new_nodes),
+            "total_nodes": self.query_graph.get_node_count(),
+            "total_edges": self.query_graph.get_edge_count(),
+            "conflicts_detected": len(all_conflicts)
+        }
 
-        # ✅ 修复：初始化insight_doc（在调用Planning Agent之前）
-        # 确保Planning Agent接收到有效的InsightDoc对象，而不是None
+        logger.info(f"Context loaded successfully: {len(new_nodes)} nodes added, {len(all_conflicts)} conflicts detected")
+
+        # Generate return message
+        base_message = f"Context loaded successfully. Added {len(new_nodes)} nodes to memory."
+
+        # If conflicts detected, add conflict report
+        if all_conflicts and self.config.REPORT_CONFLICTS_IN_CONTEXT_LOADING:
+            conflict_report = f"\n\nDetected {len(all_conflicts)} potential conflict(s):\n"
+            for i, conflict in enumerate(all_conflicts[:3], 1):  # Show first 3 conflicts at most
+                conflict_report += f"\n{i}. {conflict['description']}"
+                conflict_report += f"\n   New: {conflict['new_context']}"
+                conflict_report += f"\n   Existing: {conflict['existing_context']}\n"
+
+            if len(all_conflicts) > 3:
+                conflict_report += f"\n... and {len(all_conflicts) - 3} more conflict(s)."
+
+            base_message += conflict_report
+
+        return {
+            "answer": base_message,
+            "stats": stats,
+            "conflicts": all_conflicts  # For main.py use
+        }
+
+    def _initialize(self, user_input: str) -> str:
+        """
+        Initialization phase
+
+        Workflow:
+        1. Parse user input
+        2. Multimodal temporary storage
+        3. Classification -> Structuring -> Retrieval -> Analysis -> Build edges
+        4. Plan next steps
+        5. Enhance Prompt
+
+        Args:
+            user_input: User input
+
+        Returns:
+            Enhanced Prompt
+        """
+        # 1. Parse user input
+        text_context, question, _ = self._parse_user_input_simple(user_input)
+        doc_id = str(uuid.uuid4())
+
+        # 2. If there's text context, load it into memory first before processing question
+        if text_context:
+            logger.info("Loading text context into memory before processing question...")
+            # Directly call _load_context_only logic to process context
+            # But don't return result, continue processing question
+            self._load_context_only(text_context)
+
+        # 3. Initialize Insight Doc and plan
         self.insight_doc = InsightDoc(
             doc_id=doc_id,
             task_goal=question,
             completed_tasks=[],
             current_task=""
         )
-
-        print(f"\n[Planning] Calling Planning Agent - planning next task...")
-        # ✅ 修复：传入当前的 insight_doc（包含已完成的任务），而不是空的 InsightDoc
         planning_output = self.planning_agent.run(PlanningInput(
-            insight_doc=self.insight_doc,
-            new_memory_nodes=[
-                {
-                    "id": node.id,
-                    "context": node.context,
-                    "keywords": node.keywords,
-                    "summary": node.summary
-                }
-                for node in new_nodes
-            ],
-            conflict_notification=conflict_notification
+            insight_doc=self.insight_doc
         ))
-        print(f"   [OK] Planning complete: current task={'yes' if planning_output.current_task else 'no'}")
-
-        # ✅ 更新insight_doc（使用Planning Agent的输出）
-        self.insight_doc.task_goal = planning_output.task_goal
-        self.insight_doc.completed_tasks = planning_output.completed_tasks
-        self.insight_doc.current_task = planning_output.current_task
-
-        # 11. 增强Prompt
+        self.insight_doc = InsightDoc(
+            doc_id=doc_id,
+            task_goal=planning_output.task_goal,
+            completed_tasks=planning_output.completed_tasks,
+            current_task=planning_output.current_task
+        )
         return self.adapter.enhance_prompt(self.insight_doc)
 
     def _create_node(self, summary: str, context: str, keywords: List[str]) -> QueryGraphNode:
         """
-        创建Query Graph节点
+        Create Query Graph node
 
         Args:
-            summary: 摘要
-            context: 上下文
-            keywords: 关键词列表
+            summary: Summary
+            context: Context
+            keywords: List of keywords
 
         Returns:
-            QueryGraphNode实例
+            QueryGraphNode instance
         """
         node_id = str(uuid.uuid4())
         timestamp = time.time()
@@ -529,197 +458,82 @@ class MemoryBank:
             keywords=keywords,
             embedding=embedding,
             timestamp=timestamp,
-            links=[]  # ✅ 修复：应该是list而不是set
+            links=[]  # Should be list, not set
         )
 
-    def _parse_user_input(self, user_input: str) -> Tuple[str, str]:
+    def _parse_user_input_simple(self, user_input: str) -> Tuple[str, str, bool]:
         """
-        解析用户输入
+        Simplified input parsing - provides clearer user experience
 
-        支持格式：
-        1. 纯问题
-        2. "上下文：...\n问题：..."
-        3. "Context:...\nQuestion:..."
+        Supports three modes:
+        1. Pure question - directly input question
+        2. Starting with "Context:" - context loading only
+        3. Contains "Question:" - context + question mode
 
         Args:
-            user_input: 用户输入
+            user_input: User input
 
         Returns:
-            (text_context, question)
+            (text_context, question, is_context_only)
         """
-        lines = user_input.split('\n')
-        text_context = ""
-        question = ""
+        user_input = user_input.strip()
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        # Mode 1: Context only
+        if user_input.lower().startswith("context:") or user_input.startswith("上下文："):
+            # Remove prefix, get context content
+            if user_input.lower().startswith("context:"):
+                text_context = user_input[8:].strip()
+            else:
+                text_context = user_input[4:].strip()
+            return text_context, "", True
 
-            if line.startswith("上下文：") or line.startswith("Context:"):
-                separator = "：" if "：" in line else ":"
-                text_context = line.split(separator, 1)[1].strip()
-            elif line.startswith("问题：") or line.startswith("Question:"):
-                separator = "：" if "：" in line else ":"
-                question = line.split(separator, 1)[1].strip()
-            elif not question and not text_context:
-                # 第一行且没有前缀，当作问题
-                question = line
+        # Mode 2: Context + question (check if contains Question marker)
+        if "question:" in user_input.lower() or "问题：" in user_input:
+            # Parse context and question
+            text_context = ""
+            question = ""
 
-        # 如果没有明确问题，整个输入作为问题
-        if not question:
-            question = user_input
+            # Try to separate context and question
+            if "\nquestion:" in user_input.lower():
+                parts = user_input.split("\nquestion:", 1)
+                text_context = parts[0].strip()
+                question = parts[1].strip()
+            elif "\n问题：" in user_input:
+                parts = user_input.split("\n问题：", 1)
+                text_context = parts[0].strip()
+                question = parts[1].strip()
 
-        return text_context, question
+            # Clean context prefix
+            if text_context.lower().startswith("context:"):
+                text_context = text_context[8:].strip()
+            elif text_context.startswith("上下文："):
+                text_context = text_context[4:].strip()
 
-    def _extract_tool_responses(self, messages: List[Dict[str, str]]) -> List[str]:
-        """
-        从ReAct消息历史中提取工具响应内容（仅工具输出）
+            return text_context, question, False
 
-        Args:
-            messages: ReAct消息历史
+        # Mode 3: Pure question (no markers)
+        return "", user_input, False
 
-        Returns:
-            工具响应文本列表
-        """
-        tool_responses = []
-
-        for message in messages:
-            if message.get("role") == "user" and "content" in message:
-                content = message["content"]
-
-                # 提取<tool_response>标签内容
-                if '<tool_response>' in content and '</tool_response>' in content:
-                    try:
-                        response_text = content.split('<tool_response>')[1].split('</tool_response>')[0]
-                        response_text = response_text.strip()
-
-                        if response_text and response_text not in tool_responses:
-                            tool_responses.append(response_text)
-                    except Exception as e:
-                        logger.warning(f"Failed to parse tool response: {str(e)}")
-
-        return tool_responses
-
-    def _extract_full_context(self, messages: List[Dict[str, str]]) -> str:
-        """
-        从ReAct消息历史中提取完整上下文（包括思考、工具调用、响应和答案）
-
-        这个方法提取：
-        1. ReAct Agent的完整响应（保留<think>、<tool_call>、<answer>等所有标签）
-        2. 工具响应结果（保留<tool_response>标签）
-
-        重要：保持原始标签格式，不做任何转换！
-
-        Args:
-            messages: ReAct消息历史
-
-        Returns:
-            完整的上下文字符串
-        """
-        context_parts = []
-
-        for message in messages:
-            role = message.get("role", "")
-            content = message.get("content", "")
-
-            if role == "assistant":
-                # ✅ 修复：直接保留完整的assistant响应，不做任何转换
-                # 包含<think>、<tool_call>、<answer>等所有标签
-                if content.strip():
-                    context_parts.append(content.strip())
-
-            elif role == "user":
-                # 提取工具响应（保留<tool_response>标签）
-                if '<tool_response>' in content and '</tool_response>' in content:
-                    context_parts.append(content.strip())
-
-        full_context = "\n\n".join(context_parts)
-
-        return full_context
 
     def _should_terminate(self) -> bool:
         """
-        判断是否终止
+        Determine if should terminate
 
         Returns:
-            是否应该终止任务
+            Whether task should be terminated
         """
         if not self.insight_doc:
             return False
 
-        # 如果没有待办任务且所有已完成任务都成功，则终止
-        no_pending = not self.insight_doc.current_task
-        all_success = all(
-            task.status == "成功"
-            for task in self.insight_doc.completed_tasks
-        ) if self.insight_doc.completed_tasks else True
-
-        return no_pending and all_success
-
-    def _display_complete_memory(self):
-        """显示完整的Memory Bank记忆"""
-
-        # 1. Query Graph展示
-        logger.info("\n" + "=" * 80)
-        logger.info("📊 Query Graph - Semantic Memory Graph")
-        logger.info("=" * 80)
-        logger.info(f"Total nodes: {self.query_graph.get_node_count()}")
-        logger.info(f"Total edges: {self.query_graph.get_edge_count()}")
-        logger.info("")
-
-        for i, node in enumerate(self.query_graph.get_all_nodes(), 1):
-            logger.info(f"Node {i}:")
-            logger.info(f"  ID: {node.id}")
-            logger.info(f"  Topic: {node.context}")
-            logger.info(f"  Keywords: {', '.join(node.keywords)}")
-            logger.info(f"  Summary: {node.summary[:200]}{'...' if len(node.summary) > 200 else ''}")
-            logger.info(f"  Neighbors: {len(node.links)}")
-            if node.links:
-                logger.info(f"  Linked node IDs: {', '.join([nid[:8] for nid in node.links[:3]])}{'...' if len(node.links) > 3 else ''}")
-            logger.info("-" * 80)
-
-        # 2. Interaction Tree展示
-        logger.info("\n" + "=" * 80)
-        logger.info("📚 Interaction Tree - Interaction History")
-        logger.info("=" * 80)
-        logger.info(f"Total entries: {self.interaction_tree.get_total_entries()}")
-        logger.info(f"Linked nodes: {len(self.interaction_tree.get_nodes_with_entries())}")
-        logger.info("")
-
-        for node_id in self.interaction_tree.get_nodes_with_entries():
-            text = self.interaction_tree.get_entry(node_id)
-            logger.info(f"Node ID: {node_id[:8]}...")
-            if text:
-                logger.info(f"  Text: {text[:150]}{'...' if len(text) > 150 else ''}")
-            logger.info("-" * 80)
-
-        # 3. Insight Doc展示
-        if self.insight_doc:
-            logger.info("\n" + "=" * 80)
-            logger.info("📝 Insight Doc - Task Status")
-            logger.info("=" * 80)
-            logger.info(f"Task goal: {self.insight_doc.task_goal}")
-            logger.info(f"Completed tasks: {len(self.insight_doc.completed_tasks)}")
-            logger.info("")
-
-            for i, task in enumerate(self.insight_doc.completed_tasks, 1):
-                logger.info(f"Task {i}:")
-                logger.info(f"  Type: {task.type.value}")
-                logger.info(f"  Description: {task.description}")
-                logger.info(f"  Status: {task.status}")
-                logger.info(f"  Context: {task.context}")
-                logger.info("-" * 40)
-
-            logger.info(f"Current task: {self.insight_doc.current_task if self.insight_doc.current_task else '(none)'}")
-            logger.info("=" * 80)
+        # Terminate if no pending tasks
+        return not self.insight_doc.current_task
 
     def export_memory(self, filepath: str):
         """
-        导出记忆到JSON文件
+        Export memory to JSON file
 
         Args:
-            filepath: 输出文件路径
+            filepath: Output file path
         """
         import json
 
@@ -736,10 +550,10 @@ class MemoryBank:
 
     def load_memory(self, filepath: str):
         """
-        从JSON文件加载记忆
+        Load memory from JSON file
 
         Args:
-            filepath: 输入文件路径
+            filepath: Input file path
         """
         import json
 
@@ -755,10 +569,37 @@ class MemoryBank:
         logger.info(f"Memory loaded from file: {filepath}")
 
     def __repr__(self) -> str:
-        """返回Memory Bank摘要"""
+        """Return Memory Bank summary"""
         return (
             f"MemoryBank("
             f"nodes={self.query_graph.get_node_count()}, "
             f"edges={self.query_graph.get_edge_count()}, "
             f"entries={self.interaction_tree.get_total_entries()})"
         )
+
+    def clear_memory(self) -> None:
+        """
+        Clear all memory (Query Graph, Interaction Tree, Insight Doc)
+
+        Call this explicitly when:
+        - Ending a session (user quits)
+        - Starting a new unrelated conversation
+        - Running out of memory
+
+        Note: This does NOT affect exported memory files
+        """
+        logger.info("Clearing all memory...")
+
+        self.query_graph.clear()
+        self.retrieval_module.mark_index_dirty()
+        self.interaction_tree.clear()
+        self.insight_doc = None
+
+        # Clear adapter's conflict queue
+        if hasattr(self.adapter, '_pending_conflicts'):
+            self.adapter._pending_conflicts.clear()
+        # Reset merge depth
+        if hasattr(self.adapter, '_merge_depth'):
+            self.adapter._merge_depth = 0
+
+        logger.info("Memory cleared successfully")

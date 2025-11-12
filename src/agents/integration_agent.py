@@ -1,7 +1,7 @@
 """
-记忆整合 Agent
+Memory Integration Agent
 
-职责：基于冲突节点和验证结果，生成整合后的新节点
+Responsibility: Generate integrated new node based on conflicting nodes and validation results
 """
 
 import logging
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NodeWithNeighbors:
-    """包含邻居信息的节点"""
+    """Node with neighbor information"""
     id: str
     summary: str
     context: str
@@ -26,33 +26,33 @@ class NodeWithNeighbors:
 
 @dataclass
 class IntegrationInput:
-    """整合 Agent 输入"""
-    nodes_to_merge: List[NodeWithNeighbors]  # 待合并的冲突节点
-    validation_result: str  # 外部框架的验证结果
+    """Integration Agent input"""
+    nodes_to_merge: List[NodeWithNeighbors]  # Conflicting nodes to merge
+    validation_result: str  # Validation result from external framework
 
 
 @dataclass
 class IntegrationOutput:
-    """整合 Agent 输出"""
+    """Integration Agent output"""
     merged_node: Dict[str, Any]  # {"summary": ..., "context": ..., "keywords": [...]}
-    merge_description: str  # 合并操作描述
+    merge_description: str  # Description of merge operation
 
 
 class IntegrationAgent(BaseAgent):
     """
-    记忆整合 Agent
+    Memory Integration Agent
 
-    整合多个冲突节点的内容
+    Integrates content from multiple conflicting nodes
     """
 
     def __init__(self, llm_client, temperature: float = 0.2, top_p: float = 0.85):
         """
-        初始化整合 Agent
+        Initialize Integration Agent
 
         Args:
-            llm_client: LLMClient 实例
-            temperature: 温度参数
-            top_p: 采样参数
+            llm_client: LLMClient instance
+            temperature: Temperature parameter
+            top_p: Sampling parameter
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -61,7 +61,7 @@ class IntegrationAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "IntegrationAgent":
-        """从配置创建Agent"""
+        """Create Agent from config"""
         return cls(
             llm_client=llm_client,
             temperature=config.INTEGRATION_AGENT_TEMPERATURE,
@@ -70,30 +70,30 @@ class IntegrationAgent(BaseAgent):
 
     def run(self, input_data: IntegrationInput) -> IntegrationOutput:
         """
-        整合冲突节点
+        Integrate conflicting nodes
 
         Args:
-            input_data: IntegrationInput 实例
+            input_data: IntegrationInput instance
 
         Returns:
-            IntegrationOutput 实例
+            IntegrationOutput instance
         """
         if not input_data.nodes_to_merge:
             raise ValueError("Node list to merge cannot be empty")
 
         prompt = self._build_prompt(input_data)
 
-        # 记录LLM输入
+        # Log LLM input
         logger.debug("="*80)
-        logger.debug("📥 Integration Agent LLM Input:")
+        logger.debug("Integration Agent LLM Input:")
         logger.debug(prompt)
         logger.debug("="*80)
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # 记录LLM原始响应
+        # Log LLM raw response
         logger.debug("="*80)
-        logger.debug("📤 Integration Agent LLM Raw Response:")
+        logger.debug("Integration Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -101,15 +101,15 @@ class IntegrationAgent(BaseAgent):
 
     def _build_prompt(self, input_data: IntegrationInput) -> str:
         """
-        构建 prompt
+        Build prompt
 
         Args:
-            input_data: IntegrationInput 实例
+            input_data: IntegrationInput instance
 
         Returns:
-            完整 prompt
+            Complete prompt
         """
-        # 格式化待合并节点
+        # Format nodes to merge
         nodes = [
             {
                 "id": node.id,
@@ -129,13 +129,13 @@ class IntegrationAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> IntegrationOutput:
         """
-        解析 LLM 响应
+        Parse LLM response
 
         Args:
-            response: LLM 响应字符串
+            response: LLM response string
 
         Returns:
-            IntegrationOutput 实例
+            IntegrationOutput instance
         """
         try:
             data = self._parse_json_response(response)

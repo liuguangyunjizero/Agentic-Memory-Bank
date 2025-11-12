@@ -1,5 +1,5 @@
 """
-图操作模块
+Graph Operations Module
 """
 
 import logging
@@ -9,52 +9,59 @@ logger = logging.getLogger(__name__)
 
 
 class GraphOperations:
-    """图操作模块（封装 Query Graph 的 CRUD 操作）"""
+    """Graph operations module (encapsulates Query Graph CRUD operations)"""
 
-    def __init__(self, graph):
+    def __init__(self, graph, interaction_tree):
         """
-        初始化图操作模块
+        Initialize graph operations module
 
         Args:
-            graph: QueryGraph 实例
+            graph: QueryGraph instance
+            interaction_tree: InteractionTree instance
         """
         from src.storage.query_graph import QueryGraph
+        from src.storage.interaction_tree import InteractionTree
 
         if not isinstance(graph, QueryGraph):
             raise TypeError("graph must be a QueryGraph instance")
+        if not isinstance(interaction_tree, InteractionTree):
+            raise TypeError("interaction_tree must be an InteractionTree instance")
 
         self.graph = graph
+        self.interaction_tree = interaction_tree
         logger.info("Graph operations module initialized successfully")
 
     def add_node(self, node) -> None:
         """
-        添加节点
+        Add node
 
         Args:
-            node: QueryGraphNode 实例
+            node: QueryGraphNode instance
         """
         self.graph.add_node(node)
 
     def delete_node(self, node_id: str) -> None:
         """
-        删除节点及其所有边
+        Delete node and all its edges
 
         Args:
-            node_id: 节点ID
+            node_id: Node ID
         """
         if not self.graph.has_node(node_id):
             logger.warning(f"Node does not exist, cannot delete: {node_id[:8]}...")
             return
 
         self.graph.delete_node(node_id)
+        # Also delete entry in InteractionTree
+        self.interaction_tree.remove_entry(node_id)
 
     def add_edge(self, node_id1: str, node_id2: str) -> None:
         """
-        在两个节点间创建 related 边
+        Create related edge between two nodes
 
         Args:
-            node_id1: 第一个节点ID
-            node_id2: 第二个节点ID
+            node_id1: First node ID
+            node_id2: Second node ID
         """
         try:
             self.graph.add_edge(node_id1, node_id2)
@@ -64,58 +71,25 @@ class GraphOperations:
 
     def remove_edge(self, node_id1: str, node_id2: str) -> None:
         """
-        移除边
+        Remove edge
 
         Args:
-            node_id1: 第一个节点ID
-            node_id2: 第二个节点ID
+            node_id1: First node ID
+            node_id2: Second node ID
         """
         self.graph.remove_edge(node_id1, node_id2)
 
     def get_neighbors(self, node_id: str) -> List:
         """
-        获取节点的所有邻居
+        Get all neighbors of a node
 
         Args:
-            node_id: 节点ID
+            node_id: Node ID
 
         Returns:
-            邻居节点列表
+            List of neighbor nodes
         """
         return self.graph.get_neighbors(node_id)
-
-    def update_node_attributes(
-        self,
-        node_id: str,
-        summary: str = None,
-        context: str = None,
-        keywords: List[str] = None,
-        embedding = None
-    ) -> None:
-        """
-        更新节点的属性
-
-        Args:
-            node_id: 节点ID
-            summary: 新的摘要（可选）
-            context: 新的上下文（可选）
-            keywords: 新的关键词（可选）
-            embedding: 新的 embedding（可选）
-        """
-        if not self.graph.has_node(node_id):
-            logger.warning(f"Node does not exist, cannot update: {node_id[:8]}...")
-            return
-
-        node = self.graph.get_node(node_id)
-
-        if summary is not None:
-            node.summary = summary
-        if context is not None:
-            node.context = context
-        if keywords is not None:
-            node.keywords = keywords
-        if embedding is not None:
-            node.embedding = embedding
 
     def merge_nodes(
         self,
@@ -123,82 +97,70 @@ class GraphOperations:
         new_node
     ) -> None:
         """
-        合并多个节点：
-        1. 创建新节点
-        2. 继承所有旧节点的边（去重）
-        3. 删除旧节点
+        Merge multiple nodes:
+        1. Create new node (initially isolated, does not inherit edges)
+        2. Delete old nodes
+
+        Note: New node no longer automatically inherits old nodes' edges, needs re-analysis
 
         Args:
-            old_node_ids: 待合并的旧节点ID列表
-            new_node: 新的合并节点
+            old_node_ids: List of old node IDs to merge
+            new_node: New merged node
         """
-        # 1. 添加新节点
+        # 1. Add new node (does not inherit any edges)
         self.add_node(new_node)
 
-        # 2. 继承边（去重）
-        neighbor_ids: Set[str] = set()
-        for old_node_id in old_node_ids:
-            if not self.graph.has_node(old_node_id):
-                logger.warning(f"Old node does not exist, skipping: {old_node_id[:8]}...")
-                continue
-
-            neighbors = self.get_neighbors(old_node_id)
-            for neighbor in neighbors:
-                # 排除被合并的节点和新节点本身
-                if neighbor.id not in old_node_ids and neighbor.id != new_node.id:
-                    neighbor_ids.add(neighbor.id)
-
-        # 添加继承的边
-        for neighbor_id in neighbor_ids:
-            self.add_edge(new_node.id, neighbor_id)
-
-        # 3. 删除旧节点
+        # 2. Delete old nodes
+        deleted_count = 0
         for old_node_id in old_node_ids:
             if self.graph.has_node(old_node_id):
                 self.delete_node(old_node_id)
+                deleted_count += 1
+            else:
+                logger.warning(f"Old node does not exist, skipping: {old_node_id[:8]}...")
 
         logger.info(
-            f"Node merge completed: {len(old_node_ids)} old nodes -> new node {new_node.id[:8]}..., "
-            f"inherited {len(neighbor_ids)} edges"
+            f"Node merge completed: {deleted_count} old nodes -> new node {new_node.id[:8]}... "
+            f"(new node starts with no edges)"
         )
 
     def get_node(self, node_id: str):
         """
-        获取节点
+        Get node
 
         Args:
-            node_id: 节点ID
+            node_id: Node ID
 
         Returns:
-            节点实例，如果不存在则返回 None
+            Node instance, or None if doesn't exist
         """
         return self.graph.get_node(node_id)
 
     def has_node(self, node_id: str) -> bool:
         """
-        检查节点是否存在
+        Check if node exists
 
         Args:
-            node_id: 节点ID
+            node_id: Node ID
 
         Returns:
-            存在返回 True，否则返回 False
+            True if exists, False otherwise
         """
         return self.graph.has_node(node_id)
 
     def has_edge(self, node_id1: str, node_id2: str) -> bool:
         """
-        检查两个节点间是否有边
+        Check if edge exists between two nodes
 
         Args:
-            node_id1: 第一个节点ID
-            node_id2: 第二个节点ID
+            node_id1: First node ID
+            node_id2: Second node ID
 
         Returns:
-            有边返回 True，否则返回 False
+            True if edge exists, False otherwise
         """
         return self.graph.has_edge(node_id1, node_id2)
 
     def __repr__(self) -> str:
-        """返回模块摘要"""
+        """Return module summary"""
         return f"GraphOperations(nodes={self.graph.get_node_count()}, edges={self.graph.get_edge_count()})"

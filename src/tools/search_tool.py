@@ -1,21 +1,23 @@
 """
-Search工具
+Search Tool
 
-在网络上搜索信息，返回结构化的搜索结果（使用Serper API）。
+Searches for information on the web and returns structured search results (using Serper API).
 
-参考：WebResummer的search工具实现
+Reference: WebResummer's search tool implementation
 """
 
 import logging
 import json
+import time
 from typing import Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
 import requests
 
 logger = logging.getLogger(__name__)
 
 
 class SearchTool:
-    """Search工具：在网络上搜索信息"""
+    """Search Tool: Search for information on the web"""
 
     name = "search"
     description = "Search for information on the web. Can search multiple queries at once."
@@ -34,11 +36,11 @@ class SearchTool:
 
     def __init__(self, search_api_key: str, max_results_per_query: int = 5):
         """
-        初始化Search工具
+        Initialize Search Tool
 
         Args:
-            search_api_key: 搜索API密钥（Serper API）
-            max_results_per_query: 每个查询返回的最大结果数
+            search_api_key: Search API key (Serper API)
+            max_results_per_query: Maximum number of results per query
         """
         if not search_api_key or search_api_key == "your-serper-api-key-here":
             raise ValueError(
@@ -52,13 +54,13 @@ class SearchTool:
 
     def call(self, params: Dict[str, Any]) -> str:
         """
-        执行搜索
+        Execute search
 
         Args:
-            params: {"query": [str, str, ...]}
+            params: {"query": [str, str, ...]} or {"query": str}
 
         Returns:
-            str: JSON格式的搜索结果
+            str: JSON-formatted search results
         """
         queries = params.get("query", [])
 
@@ -68,24 +70,30 @@ class SearchTool:
             return json.dumps({"error": error_msg}, ensure_ascii=False)
 
         if not isinstance(queries, list):
-            queries = [queries]  # 如果是单个字符串，转换为列表
+            queries = [queries]
 
         logger.info(f"Executing search: {len(queries)} queries")
 
         try:
-            all_results = []
+            # Process multiple queries in parallel
+            if len(queries) == 1:
+                # Single query: call directly (avoid thread pool overhead)
+                all_results = [self._serper_search_with_retry(queries[0])]
+            else:
+                # Multiple queries: parallel processing (reference code style)
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    all_results = list(executor.map(self._serper_search_with_retry, queries))
 
-            for query in queries:
-                results = self._serper_search(query)
-                all_results.extend(results)
+            # Flatten all results
+            flattened_results = [item for sublist in all_results for item in sublist]
 
             output = {
                 "queries": queries,
-                "total_results": len(all_results),
-                "results": all_results
+                "total_results": len(flattened_results),
+                "results": flattened_results
             }
 
-            logger.info(f"Search completed: {len(all_results)} results")
+            logger.info(f"Search completed: {len(flattened_results)} results from {len(queries)} queries")
             return json.dumps(output, ensure_ascii=False, indent=2)
 
         except Exception as e:
@@ -93,15 +101,36 @@ class SearchTool:
             logger.error(error_msg)
             return json.dumps({"error": error_msg}, ensure_ascii=False)
 
-    def _serper_search(self, query: str) -> List[Dict[str, str]]:
+    def _serper_search_with_retry(self, query: str) -> List[Dict[str, str]]:
         """
-        使用Serper API进行搜索
+        Search with retry mechanism (reference code style)
 
         Args:
-            query: 搜索查询
+            query: Search query
 
         Returns:
-            搜索结果列表
+            List of search results (returns empty list on failure)
+        """
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                return self._serper_search(query)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Search '{query}' failed after {max_retries} retries: {str(e)}")
+                    return []  # Return empty list instead of throwing exception
+                logger.warning(f"Search '{query}' attempt {attempt + 1}/{max_retries} failed, retrying...")
+                time.sleep(0.5)
+
+    def _serper_search(self, query: str) -> List[Dict[str, str]]:
+        """
+        Search using Serper API
+
+        Args:
+            query: Search query
+
+        Returns:
+            List of search results
         """
         try:
             response = requests.post(
@@ -114,12 +143,12 @@ class SearchTool:
                     "q": query,
                     "num": self.max_results_per_query
                 },
-                timeout=10
+                timeout=30  # Increased to 30 seconds
             )
             response.raise_for_status()
             data = response.json()
 
-            # 解析结果
+            # Parse results
             results = []
             if "organic" in data:
                 for item in data["organic"][:self.max_results_per_query]:
@@ -142,5 +171,5 @@ class SearchTool:
             raise
 
     def __repr__(self) -> str:
-        """返回工具摘要"""
+        """Return tool summary"""
         return f"SearchTool(name={self.name}, api=Serper)"

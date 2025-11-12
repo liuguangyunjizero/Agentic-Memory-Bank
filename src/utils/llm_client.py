@@ -1,12 +1,12 @@
 """
-LLM 客户端模块
+LLM Client Module
 
-统一的 LLM 调用接口，支持：
+Unified LLM calling interface supporting:
 - DeepSeek API
 - OpenAI API
-- 本地模型
-- 自动重试机制
-- Token 计数估算
+- Local models
+- Automatic retry mechanism
+- Token counting estimation
 """
 
 import time
@@ -17,7 +17,7 @@ from openai import OpenAI
 # Sentinel value to distinguish "not passed" from "explicitly passed None"
 _UNSET = object()
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -27,17 +27,17 @@ logger = logging.getLogger(__name__)
 
 class LLMClient:
     """
-    LLM 客户端（参考 WebResummer）
+    LLM Client (reference: WebResummer)
 
-    支持多个 LLM 提供商的统一调用接口
+    Unified calling interface supporting multiple LLM providers
     """
 
     def __init__(
         self,
         provider: str = "deepseek",
-        api_key: str = "EMPTY",
-        base_url: str = "http://127.0.0.1:6001/v1",
-        model: str = "default",
+        api_key: str = "",
+        base_url: str = "https://api.deepseek.com/v1",
+        model: str = "deepseek-chat",
         temperature: float = 0.6,
         max_tokens: int = 4096,
         top_p: float = 0.95,
@@ -45,18 +45,18 @@ class LLMClient:
         timeout: int = 300
     ):
         """
-        初始化 LLM 客户端
+        Initialize LLM Client
 
         Args:
-            provider: LLM 提供商 (deepseek/openai/local)
-            api_key: API 密钥
-            base_url: API 端点 URL
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大生成 token 数
-            top_p: 采样参数
-            max_retries: 最大重试次数
-            timeout: 请求超时时间（秒）
+            provider: LLM provider (deepseek/openai/local)
+            api_key: API key
+            base_url: API endpoint URL
+            model: Model name
+            temperature: Temperature parameter
+            max_tokens: Maximum tokens to generate
+            top_p: Sampling parameter
+            max_retries: Maximum retry attempts
+            timeout: Request timeout (seconds)
         """
         self.provider = provider
         self.api_key = api_key
@@ -68,7 +68,7 @@ class LLMClient:
         self.max_retries = max_retries
         self.timeout = timeout
 
-        # 创建 OpenAI 客户端（兼容所有提供商）
+        # Create OpenAI client (compatible with all providers)
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url
@@ -82,13 +82,13 @@ class LLMClient:
     @classmethod
     def from_config(cls, config) -> "LLMClient":
         """
-        从 Config 对象创建 LLM 客户端
+        Create LLM client from Config object
 
         Args:
-            config: Config 实例
+            config: Config instance
 
         Returns:
-            LLMClient 实例
+            LLMClient instance
         """
         return cls(
             provider=config.LLM_PROVIDER,
@@ -109,32 +109,32 @@ class LLMClient:
         max_tokens: Optional[int] = None
     ) -> str:
         """
-        调用 LLM 并返回响应（带重试机制）
+        Call LLM and return response (with retry mechanism)
 
         Args:
-            messages: 消息列表 [{"role": "user", "content": "..."}] 或单个字符串
-            temperature: 温度参数（可选，覆盖默认值）
-            top_p: 采样参数（可选）
-            stop: 停止词列表（可选）
-                - 不传：使用默认 stop 序列 ["\n<tool_response", "<tool_response>"]
-                - 传 None：不使用任何 stop 序列
-                - 传 list：使用指定的 stop 序列
-            max_tokens: 最大 token 数（可选）
+            messages: Message list [{"role": "user", "content": "..."}] or single string
+            temperature: Temperature parameter (optional, overrides default)
+            top_p: Sampling parameter (optional)
+            stop: Stop sequence list (optional)
+                - Not passed: use default stop sequences ["\n<tool_response", "<tool_response>"]
+                - Pass None: don't use any stop sequences
+                - Pass list: use specified stop sequences
+            max_tokens: Maximum tokens (optional)
 
         Returns:
-            LLM 响应内容
+            LLM response content
 
-        参考：WebResummer 的重试机制
+        Reference: WebResummer's retry mechanism
         """
-        # 如果 messages 是字符串，转换为消息列表
+        # If messages is a string, convert to message list
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
 
-        # 使用传入的参数或默认值
+        # Use passed parameters or defaults
         temperature = temperature if temperature is not None else self.temperature
         top_p = top_p if top_p is not None else self.top_p
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
-        # ✅ Fixed: Use sentinel to properly handle stop parameter
+        # Fixed: Use sentinel to properly handle stop parameter
         # - If not passed (default _UNSET): use default stop sequences for ReAct Agent
         # - If explicitly passed None: don't use any stop sequences (for other Agents)
         # - If passed a list: use that list
@@ -142,7 +142,7 @@ class LLMClient:
             stop = ["\n<tool_response", "<tool_response>"]
         # else: use whatever was passed (None or a list)
 
-        # 重试循环
+        # Retry loop
         for attempt in range(self.max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -171,7 +171,7 @@ class LLMClient:
                     logger.error(f"Maximum retry attempts reached, call failed")
                     return f"Error: Failed after {self.max_retries} attempts - {str(e)}"
 
-                # 指数退避
+                # Exponential backoff
                 sleep_time = min(2 ** attempt, 30)
                 logger.info(f"Waiting {sleep_time} seconds before retry...")
                 time.sleep(sleep_time)
@@ -180,57 +180,57 @@ class LLMClient:
 
     def count_tokens(self, messages: Union[List[Dict[str, str]], str]) -> int:
         """
-        估算 token 数量（简单实现）
+        Estimate token count
 
         Args:
-            messages: 消息列表或字符串
+            messages: Message list or string
 
         Returns:
-            估算的 token 数
+            Estimated token count
 
-        注意：这是一个粗略估算，实际 token 数可能有差异
-              对于精确计数，可以使用 tiktoken 库
-        """
-        # 如果是字符串，直接计算
-        if isinstance(messages, str):
-            # 简单估算：中文约1个字符1个token，英文约4个字符1个token
-            # 这里使用平均值：每3个字符约1个token
-            return len(messages) // 3
-
-        # 如果是消息列表，累加所有内容
-        total_chars = sum(
-            len(msg.get("content", ""))
-            for msg in messages
-            if isinstance(msg, dict)
-        )
-        return total_chars // 3
-
-    def test_connection(self) -> bool:
-        """
-        测试 LLM 连接是否正常
-
-        Returns:
-            连接成功返回 True，失败返回 False
+        Note:
+            - Prioritizes using tiktoken library for precise counting
+            - If tiktoken is unavailable, uses simple estimate: ~1 token per 3 characters
         """
         try:
-            logger.info("Testing LLM connection...")
-            response = self.call([{"role": "user", "content": "你好"}])
+            import tiktoken
 
-            if "Error" not in response:
-                logger.info("LLM connection test successful")
-                return True
-            else:
-                logger.error(f"LLM connection test failed: {response}")
-                return False
+            # Use cl100k_base encoder (used by GPT-3.5/GPT-4)
+            # Generally applicable to DeepSeek as well
+            encoding = tiktoken.get_encoding("cl100k_base")
 
-        except Exception as e:
-            logger.error(f"LLM connection test failed: {str(e)}")
-            return False
+            # If string, calculate directly
+            if isinstance(messages, str):
+                return len(encoding.encode(messages))
 
-    def __repr__(self) -> str:
-        """返回客户端摘要"""
-        return (
-            f"LLMClient(provider={self.provider}, "
-            f"model={self.model}, "
-            f"base_url={self.base_url})"
-        )
+            # If message list, sum all content
+            total_tokens = 0
+            for msg in messages:
+                if isinstance(msg, dict):
+                    # Calculate tokens for role and content
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    total_tokens += len(encoding.encode(role))
+                    total_tokens += len(encoding.encode(content))
+                    # Add 3-4 tokens per message (format overhead)
+                    total_tokens += 4
+
+            return total_tokens
+
+        except ImportError:
+            # tiktoken unavailable, use simple estimation
+            logger.debug("tiktoken not available, using simple estimation")
+
+            # If string, calculate directly
+            if isinstance(messages, str):
+                # Simple estimate: ~1 character = 1 token for Chinese, ~4 characters = 1 token for English
+                # Using average: ~3 characters = 1 token
+                return len(messages) // 3
+
+            # If message list, sum all content
+            total_chars = sum(
+                len(msg.get("content", ""))
+                for msg in messages
+                if isinstance(msg, dict)
+            )
+            return total_chars // 3

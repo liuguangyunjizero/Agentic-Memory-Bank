@@ -372,11 +372,11 @@ Memory Analysis Agent 在第一阶段判断期间检测到冲突关系。
 
 **外部 API 配置**：提供用于网络搜索的 Serper API 密钥和用于网页内容提取的 Jina API 密钥。
 
-**ReAct 配置**：定义默认为 60 的每次运行最大 LLM 调用次数和默认为 32000 的最大上下文 token 数。
+**ReAct 配置**：定义默认为 60 的每次运行最大 LLM 调用次数和默认为 128000 的最大上下文 token 数。
 
 **存储路径配置**：指定用于多模态临时存储的临时目录和用于正式多模态内容存储的存储目录。
 
-**Agent 窗口配置**：为每个智能体设置上下文窗口大小，包括 Classification、Structure、Analysis、Integration 和 Planning Agent，都默认为 8000 个 token。
+**Agent 窗口配置**：为每个智能体设置上下文窗口大小，包括 Classification、Structure、Analysis、Integration 和 Planning Agent，都默认为 32000 个 token。
 
 **Agent LLM 参数配置**：为每个智能体单独配置 temperature 和 top-p。Classification Agent 使用 0.4 温度和 0.9 top-p。Structure Agent 使用 0.1 温度和 0.8 top-p。Analysis Agent 使用 0.4 温度和 0.9 top-p。Integration Agent 使用 0.2 温度和 0.85 top-p。Planning Agent 使用 0.6 温度和 0.95 top-p。ReAct Agent 使用 0.6 温度和 0.95 top-p。
 

@@ -1,201 +1,171 @@
 """
 Agentic Memory Bank - Command Line Interface
 
-Interactive mode only - simplest usage
-
-Usage:
-  python main.py                        # Start interactive mode
-  python main.py --debug               # Start with debug logs
-  python main.py --load memory.json    # Load memory and start
+Provides interactive mode for querying with persistent memory management.
 """
 
 import sys
 import argparse
 import logging
+import traceback
 from pathlib import Path
 from datetime import datetime
+from typing import Any, Optional
 
-# 添加项目根目录到路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from src.memory_bank import MemoryBank
 from src.config import Config
 
+# Agent identifier keywords for display hooks
+AGENT_IDENTIFIERS = {
+    "ReAct Agent": "Web Information Seeking Master with memory and tool access",
+    "Planning Agent": "incremental task planning expert",
+    "Classification Agent": "topic-based clustering",
+    "Structure Agent": "information compression expert",
+    "Analysis Agent": "memory relationship analysis expert",
+    "Integration Agent": "memory integration expert"
+}
 
-def setup_logging(verbose: bool = False):
-    """
-    Configure logging
+# Third-party library loggers to suppress
+SUPPRESSED_LOGGERS = [
+    "httpx", "httpcore", "sentence_transformers",
+    "urllib3", "urllib3.connectionpool", "openai", "openai._base_client"
+]
 
-    Args:
-        verbose: Whether to show detailed debug info
 
-    Logging strategy:
-    - Console: INFO level, shows necessary info
-    - File: DEBUG level, shows all details (including all agent inputs/outputs, memory nodes, etc.)
-    """
-    # Create logs directory
+def setup_logging() -> None:
+    """Configure logging with console (INFO) and file (DEBUG) output."""
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
 
-    # Generate log filename (by date and time)
     log_filename = logs_dir / f"memory_bank_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    # Create root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)  # Set root to DEBUG to pass all messages
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
-    # Clear existing handlers
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
     root_logger.handlers.clear()
 
-    # 1. Console Handler - INFO level (only show necessary info)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO if not verbose else logging.DEBUG)
-    console_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_format)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # 2. File Handler - DEBUG level (show all details)
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
-    file_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    file_handler.setFormatter(file_format)
+    file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
-    # Disable DEBUG logs from third-party libraries
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
-    logging.getLogger("openai._base_client").setLevel(logging.WARNING)
+    for logger_name in SUPPRESSED_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
-    # Output log file location
     logging.info(f"📝 Log file: {log_filename}")
 
 
-
-def setup_display_hook():
+def _detect_agent_type(messages: Any) -> tuple[Optional[str], bool]:
     """
-    Setup LLM call real-time display hook
+    Detect agent type from LLM messages.
+    Returns (agent_name, is_react_agent) or (None, False) for tool-internal calls.
+    """
+    prompt_text = ""
+    if isinstance(messages, str):
+        prompt_text = messages
+    elif isinstance(messages, list) and len(messages) > 0:
+        prompt_text = messages[0].get('content', '')
 
-    Display strategy:
-    - ReAct Agent: Show raw response (preserve all <think>, <tool_call> tags)
-    - Other Agents: Show simple indicator
-    - Tool internal calls: Don't show
+    if not prompt_text:
+        return None, False
+
+    for agent_name, identifier in AGENT_IDENTIFIERS.items():
+        if identifier in prompt_text:
+            is_react = (agent_name == "ReAct Agent")
+            return agent_name, is_react
+
+    if 'extract relevant information' in prompt_text.lower() or 'summarize' in prompt_text.lower():
+        return None, False
+
+    return None, False
+
+
+def setup_display_hook() -> None:
+    """
+    Monkey-patch LLMClient.call to display agent activity.
+    Shows simple indicators for non-ReAct agents (ReAct handles its own display).
     """
     from src.utils.llm_client import LLMClient
 
-    # Save original method
     original_call = LLMClient.call
 
-    def patched_call(self, messages, temperature=None, top_p=None, stop=None, max_tokens=None):
-        """Intercept LLM calls, display interaction in real-time"""
-
-        # Determine Agent type
-        is_react = False
-        agent_type = None
-
-        # Handle string or list format messages
-        if isinstance(messages, str):
-            prompt_text = messages
-            if 'intelligent assistant with memory and tool access' in prompt_text:
-                is_react = True
-                agent_type = "ReAct Agent"
-            elif 'incremental task planning expert' in prompt_text:
-                agent_type = "Planning Agent"
-            elif 'topic-based clustering' in prompt_text:
-                agent_type = "Classification Agent"
-            elif 'information compression expert' in prompt_text:
-                agent_type = "Structure Agent"
-            elif 'memory relationship analysis expert' in prompt_text:
-                agent_type = "Analysis Agent"
-            elif 'memory integration expert' in prompt_text:
-                agent_type = "Integration Agent"
-            # Tool internal calls - don't show
-            elif 'extract relevant information' in prompt_text.lower() or 'summarize' in prompt_text.lower():
-                agent_type = None
-        elif isinstance(messages, list) and len(messages) > 0:
-            system_msg = messages[0].get('content', '')
-            if 'intelligent assistant with memory and tool access' in system_msg:
-                is_react = True
-                agent_type = "ReAct Agent"
-            elif 'incremental task planning expert' in system_msg:
-                agent_type = "Planning Agent"
-            elif 'topic-based clustering' in system_msg:
-                agent_type = "Classification Agent"
-            elif 'information compression expert' in system_msg:
-                agent_type = "Structure Agent"
-            elif 'memory relationship analysis expert' in system_msg:
-                agent_type = "Analysis Agent"
-            elif 'memory integration expert' in system_msg:
-                agent_type = "Integration Agent"
-
-        # Call original method
+    def patched_call(
+        self,
+        messages: Any,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        stop: Any = None,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        agent_type, is_react = _detect_agent_type(messages)
         response = original_call(self, messages, temperature, top_p, stop, max_tokens)
 
-        # Real-time display
-        if agent_type:  # Only show identified Agents
-            if is_react:
-                # ReAct Agent: Show raw content (preserve all tags)
-                print("\n" + "=" * 80)
-                print(f"🤖 {agent_type}")
-                print("=" * 80)
-                print(response)  # Raw output, no processing
-                print("=" * 80)
-            else:
-                # Other Agents: Show simple indicator
-                print(f"  → {agent_type} processing...")
+        if agent_type and not is_react:
+            print(f"  → {agent_type} processing...")
 
         return response
 
-    # Apply patch
     LLMClient.call = patched_call
 
 
-def run_interactive(memory_bank: MemoryBank):
+def run_interactive(memory_bank: MemoryBank) -> None:
     """
-    Interactive mode
+    Interactive query mode with context loading and memory management.
+    Supports direct questions, context-only mode, and context + question mode.
+    """
+    print("\n🚀 Agentic Memory Bank - Interactive Mode")
+    print("\n📖 Input Modes:")
+    print("  - Direct question: Just type your question")
+    print("  - Load context: Start with 'Context:' or '上下文：'")
+    print("  - Context + Question: Use 'Context: ... \\nQuestion: ...'")
+    print("\n⚙️  Commands:")
+    print("  - 'export <file>': Save memory to file")
+    print("  - 'load <file>': Load memory from file")
+    print("  - 'clear': Clear all memory")
+    print("  - 'quit': Exit the program\n")
 
-    Args:
-        memory_bank: MemoryBank instance
-    """
-    print("\n" + "=" * 100)
-    print("  🚀 Agentic Memory Bank - Interactive Mode")
-    print("=" * 100)
-    print("\nCommands:")
-    print("  Type your question directly to query")
-    print("  'export <filename>' - Export memory to file")
-    print("  'load <filename>' - Load memory from file")
-    print("  'stats' - Show statistics")
-    print("  'quit' or 'exit' - Exit program")
-    print("=" * 100 + "\n")
+    context_loaded = False
+    last_context_conflicts = None
 
     while True:
         try:
-            # Read input
-            query = input("\n> ").strip()
+            if context_loaded and last_context_conflicts:
+                prompt = "❗ > "
+            elif context_loaded:
+                prompt = "✓ > "
+            else:
+                prompt = "> "
 
+            query = input(prompt).strip()
             if not query:
                 continue
 
-            # Handle commands
             if query.lower() in ["quit", "exit"]:
+                print("\n🧹 Cleaning up memory...")
+                memory_bank.clear_memory()
                 print("Goodbye!")
                 break
 
             elif query.lower().startswith("export"):
                 parts = query.split(maxsplit=1)
                 filename = parts[1] if len(parts) > 1 else "memory_export.json"
-                memory_bank.export_memory(filename)
-                print(f"💾 Memory exported to: {filename}")
+                try:
+                    memory_bank.export_memory(filename)
+                    print(f"💾 Exported to: {filename}")
+                except Exception as e:
+                    print(f"❌ Export failed: {e}")
 
             elif query.lower().startswith("load"):
                 parts = query.split(maxsplit=1)
@@ -203,117 +173,97 @@ def run_interactive(memory_bank: MemoryBank):
                     print("Usage: load <filename>")
                     continue
                 filename = parts[1]
-                memory_bank.load_memory(filename)
-                print(f"📥 Memory loaded from file: {filename}")
+                try:
+                    memory_bank.load_memory(filename)
+                    print(f"📥 Loaded from: {filename}")
+                    context_loaded = False
+                    last_context_conflicts = None
+                except FileNotFoundError:
+                    print(f"❌ File not found: {filename}")
+                except Exception as e:
+                    print(f"❌ Load failed: {e}")
 
-            elif query.lower() == "stats":
-                print("\n📊 Current Statistics:")
-                print(f"  - Graph nodes: {memory_bank.query_graph.get_node_count()}")
-                print(f"  - Graph edges: {memory_bank.query_graph.get_edge_count()}")
-                print(f"  - Interaction Tree entries: {memory_bank.interaction_tree.get_total_entries()}")
+            elif query.lower() == "clear":
+                confirm = input("⚠️  Clear all memory? This cannot be undone. (yes/no): ").strip().lower()
+                if confirm == "yes":
+                    memory_bank.clear_memory()
+                    print("✅ Memory cleared")
+                    context_loaded = False
+                    last_context_conflicts = None
+                else:
+                    print("Cancelled")
 
             else:
-                # Normal query - execute directly
-                print("\n" + "=" * 100)
-                print("📝 User Input:")
-                print("=" * 100)
-                print(query)
-                print("=" * 100)
+                is_context_only = query.lower().startswith("context:") or query.startswith("上下文：")
 
-                # Execute query
+                if is_context_only:
+                    print(f"\n📚 Loading context...")
+                elif context_loaded and not ("context:" in query.lower() or "上下文：" in query):
+                    print(f"\n💡 Using previously loaded context to answer...")
+                else:
+                    print(f"\n📝 Query: {query}")
+
                 result = memory_bank.run(query)
 
-                # Show final answer
-                print("\n" + "=" * 100)
-                print("✅ Final Answer:")
-                print("=" * 100)
-                print(result["answer"])
-                print("=" * 100)
+                if is_context_only:
+                    context_loaded = True
+                    last_context_conflicts = result.get("conflicts")
 
-                # Show statistics
-                print("\n📊 Statistics:")
-                stats = result["stats"]
-                print(f"  - Iterations: {stats.get('iterations', 0)}")
-                print(f"  - Query Graph nodes: {stats.get('graph_nodes', 0)}")
-                print(f"  - Query Graph edges: {stats.get('graph_edges', 0)}")
-                print(f"  - Interaction Tree entries: {stats.get('tree_entries', 0)}")
-                print(f"  - Completed tasks: {stats.get('completed_tasks', 0)}")
+                    if last_context_conflicts:
+                        print(f"\n⚠️ {len(last_context_conflicts)} conflict(s) detected in context.")
+                        print("   These will be resolved when you ask a question.")
+                    else:
+                        print("\n✅ Context loaded successfully. You can now ask questions.")
+
+                print()
 
         except KeyboardInterrupt:
-            print("\n\nInterrupted. Goodbye!")
+            print("\n\n🧹 Cleaning up memory...")
+            memory_bank.clear_memory()
+            print("Interrupted. Goodbye!")
             break
         except Exception as e:
-            print(f"\n❌ Error: {str(e)}")
-            import traceback
+            print(f"\n❌ Error: {e}")
             traceback.print_exc()
 
 
-def main():
-    """Main function - Interactive mode only"""
+def main() -> None:
+    """Main entry point for interactive mode with optional memory loading."""
     parser = argparse.ArgumentParser(
-        description="Agentic Memory Bank - Interactive Mode",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Usage:
-  python main.py --interactive          # Start interactive mode
-  python main.py --interactive --debug  # Interactive mode with debug logs
-  python main.py --load memory.json     # Load memory and start interactive mode
-        """
+        description="Agentic Memory Bank - Interactive Mode"
     )
 
-    # Interactive mode (always on)
-    parser.add_argument(
-        "--interactive", "-i",
-        action="store_true",
-        default=True,
-        help="Interactive mode (default)"
-    )
-
-    # Load memory
     parser.add_argument(
         "--load",
         type=str,
         help="Load memory from JSON file before starting"
     )
 
-    # Debug mode
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Show detailed debug logs (DEBUG level)"
-    )
-
     args = parser.parse_args()
 
-    # Configure logging
-    setup_logging(verbose=args.debug)
-
-    # Setup display hook
+    setup_logging()
     setup_display_hook()
 
     try:
-        # Initialize Memory Bank
-        print("\n" + "=" * 100)
-        print("🚀 Initializing Agentic Memory Bank...")
-        print("=" * 100)
+        print("\n🚀 Initializing Agentic Memory Bank...")
         config = Config()
         memory_bank = MemoryBank(config)
-        print("✅ Initialization complete")
-        print(f"  - LLM model: {config.LLM_MODEL}")
-        print(f"  - Embedding model: {config.EMBEDDING_MODEL}")
+        print(f"✅ Ready | Model: {config.LLM_MODEL} | Embedding: {config.EMBEDDING_MODEL}")
 
-        # Load memory (if specified)
         if args.load:
-            print(f"\n📥 Loading memory: {args.load}")
-            memory_bank.load_memory(args.load)
-            print("✅ Loading complete")
+            try:
+                if not Path(args.load).exists():
+                    print(f"⚠️  Warning: File not found: {args.load}")
+                else:
+                    memory_bank.load_memory(args.load)
+                    print(f"📥 Loaded memory from: {args.load}")
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to load memory: {e}")
 
-        # Always run in interactive mode
         run_interactive(memory_bank)
 
     except Exception as e:
-        print(f"\n❌ Fatal error: {str(e)}")
-        import traceback
+        print(f"\n❌ Fatal error: {e}")
         traceback.print_exc()
         sys.exit(1)
 

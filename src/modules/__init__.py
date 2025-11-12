@@ -1,9 +1,1 @@
-"""
-硬编码功能模块
-
-包含不依赖LLM的核心功能：
-- Embedding 计算
-- 混合检索
-- 图操作
-- 上下文更新
-"""
+"""Module layer components - embedding, retrieval, and graph operations."""

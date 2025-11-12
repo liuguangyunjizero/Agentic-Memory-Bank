@@ -1,7 +1,7 @@
 """
-记忆分析 Agent
+Memory Analysis Agent
 
-职责：判断新节点与现有节点的关系（conflict/related/unrelated）
+Responsibility: Determine relationship between new node and existing nodes (conflict/related/unrelated)
 """
 
 import logging
@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NodeInfo:
-    """节点信息（不包含 embedding）"""
-    id: Optional[str] = None  # 新节点无 id
+    """Node information (without embedding)"""
+    id: Optional[str] = None  # New node has no id
     summary: str = ""
     context: str = ""
     keywords: List[str] = None
@@ -29,43 +29,43 @@ class NodeInfo:
 
 @dataclass
 class Relationship:
-    """节点关系"""
+    """Node relationship"""
     existing_node_id: str
     relationship: str  # "conflict" | "related" | "unrelated"
-    reasoning: str  # 判断理由
+    reasoning: str  # Reasoning for determination
 
-    # conflict 特有字段
+    # conflict-specific field
     conflict_description: Optional[str] = None
 
 
 @dataclass
 class AnalysisInput:
-    """分析 Agent 输入"""
-    new_node: NodeInfo  # 新节点
-    candidate_nodes: List[NodeInfo]  # 候选节点
+    """Analysis Agent input"""
+    new_node: NodeInfo  # New node
+    candidate_nodes: List[NodeInfo]  # Candidate nodes
 
 
 @dataclass
 class AnalysisOutput:
-    """分析 Agent 输出"""
+    """Analysis Agent output"""
     relationships: List[Relationship]
 
 
 class AnalysisAgent(BaseAgent):
     """
-    记忆分析 Agent
+    Memory Analysis Agent
 
-    判断优先级：conflict > related > unrelated
+    Determination priority: conflict > related > unrelated
     """
 
     def __init__(self, llm_client, temperature: float = 0.4, top_p: float = 0.9):
         """
-        初始化分析 Agent
+        Initialize Analysis Agent
 
         Args:
-            llm_client: LLMClient 实例
-            temperature: 温度参数
-            top_p: 采样参数
+            llm_client: LLMClient instance
+            temperature: Temperature parameter
+            top_p: Sampling parameter
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -74,7 +74,7 @@ class AnalysisAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "AnalysisAgent":
-        """从配置创建Agent"""
+        """Create Agent from config"""
         return cls(
             llm_client=llm_client,
             temperature=config.ANALYSIS_AGENT_TEMPERATURE,
@@ -83,13 +83,13 @@ class AnalysisAgent(BaseAgent):
 
     def run(self, input_data: AnalysisInput) -> AnalysisOutput:
         """
-        分析节点关系
+        Analyze node relationships
 
         Args:
-            input_data: AnalysisInput 实例
+            input_data: AnalysisInput instance
 
         Returns:
-            AnalysisOutput 实例
+            AnalysisOutput instance
         """
         if not input_data.candidate_nodes:
             logger.warning("Candidate node list is empty, returning empty relationships")
@@ -97,17 +97,17 @@ class AnalysisAgent(BaseAgent):
 
         prompt = self._build_prompt(input_data)
 
-        # 记录LLM输入
+        # Log LLM input
         logger.debug("="*80)
-        logger.debug("📥 Analysis Agent LLM Input:")
+        logger.debug("Analysis Agent LLM Input:")
         logger.debug(prompt)
         logger.debug("="*80)
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # 记录LLM原始响应
+        # Log LLM raw response
         logger.debug("="*80)
-        logger.debug("📤 Analysis Agent LLM Raw Response:")
+        logger.debug("Analysis Agent LLM Raw Response:")
         logger.debug(response)
         logger.debug("="*80)
 
@@ -115,21 +115,22 @@ class AnalysisAgent(BaseAgent):
 
     def _build_prompt(self, input_data: AnalysisInput) -> str:
         """
-        构建 prompt
+        Build prompt
 
         Args:
-            input_data: AnalysisInput 实例
+            input_data: AnalysisInput instance
 
         Returns:
-            完整 prompt
+            Complete prompt
         """
-        # 格式化候选节点
+        # Format candidate nodes
         candidates = [
             {
                 "id": node.id,
                 "summary": node.summary,
                 "context": node.context,
-                "keywords": node.keywords
+                "keywords": node.keywords,
+                "merge_description": node.merge_description
             }
             for node in input_data.candidate_nodes
         ]
@@ -144,18 +145,18 @@ class AnalysisAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> AnalysisOutput:
         """
-        解析 LLM 响应
+        Parse LLM response
 
         Args:
-            response: LLM 响应字符串
+            response: LLM response string
 
         Returns:
-            AnalysisOutput 实例
+            AnalysisOutput instance
         """
         try:
             data = self._parse_json_response(response)
 
-            # 如果返回的是单个对象，转换为列表
+            # If single object returned, convert to list
             if isinstance(data, dict):
                 data = [data]
 
@@ -179,5 +180,5 @@ class AnalysisAgent(BaseAgent):
 
         except Exception as e:
             logger.error(f"Failed to parse analysis response: {str(e)}")
-            # 返回默认的无关关系
+            # Return default unrelated relationship
             return AnalysisOutput(relationships=[])

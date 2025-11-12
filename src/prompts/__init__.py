@@ -1,5 +1,1 @@
-"""
-Prompt 模板模块
-
-包含所有 Agent 的 prompt 模板
-"""
+"""Agent prompt templates for the Agentic Memory Bank system."""

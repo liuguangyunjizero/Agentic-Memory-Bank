@@ -45,11 +45,10 @@ CLASSIFICATION_PROMPT = """Please analyze the input context and determine whethe
 - Each cluster separated by `=== CLUSTER [id] ===`
 - CONTEXT: One-sentence topic description (15-30 words)
 - KEYWORDS: Comma-separated keyword list
-- **⚠️ EXTREMELY IMPORTANT**: Between CONTENT_START and CONTENT_END, **must copy original text verbatim**
-  - ✅ Must copy all content completely, no omissions, truncations, or paraphrasing
-  - ✅ Preserve all formatting: line breaks, indentation, special characters, tags (like <think>, <tool_call>, <answer>, etc.)
-  - ❌ Absolutely NO summarizing, compressing, or using "..." as replacement
-  - ❌ Empty content will cause severe downstream task failures
+- **CONTENT Field Logic**:
+  - **If NOT clustering (single topic)**: You do NOT need to copy content between CONTENT_START/CONTENT_END. System will automatically use original text. You can leave it empty or use a placeholder like "[Original Content]".
+  - **If clustering (multiple topics)**: You MUST copy the corresponding portion of original text for each cluster between CONTENT_START/CONTENT_END. Each cluster should contain its relevant segment only.
+  - ⚠️ When clustering, preserve all formatting: line breaks, indentation, special characters, tags (like <think>, <tool_call>, <answer>, etc.)
 - Content can include any characters, no escaping needed
 
 Single topic example (no clustering):
@@ -60,9 +59,7 @@ SHOULD_CLUSTER: false
 CONTEXT: One-sentence topic description (15-30 words)
 KEYWORDS: keyword1, keyword2, keyword3
 CONTENT_START
-Complete original text content, preserving all formatting.
-Can contain any special characters: quotes, backslashes, braces, etc.
-Including JSON format text is fine: {{"key": "value"}}
+[Original Content]
 CONTENT_END
 ```
 
@@ -74,14 +71,16 @@ SHOULD_CLUSTER: true
 CONTEXT: Topic 1 description
 KEYWORDS: keyword1, keyword2
 CONTENT_START
-Complete original content for topic 1...
+Complete original content for topic 1 portion...
+(Must copy verbatim from original text, no summarization)
 CONTENT_END
 
 === CLUSTER c2 ===
 CONTEXT: Topic 2 description
 KEYWORDS: keyword3, keyword4
 CONTENT_START
-Complete original content for topic 2...
+Complete original content for topic 2 portion...
+(Must copy verbatim from original text, no summarization)
 CONTENT_END
 ```
 
@@ -91,12 +90,11 @@ CONTENT_END
 - Content can be directly copy-pasted, no escaping needed
 
 **⚠️ Final Emphasis**:
-Between CONTENT_START and CONTENT_END **must be a complete copy of the original text**, not a summary!
-- Operation: Copy-paste context content verbatim
-- Verification: Confirm content length is sufficient (empty content = severe error)
-- Clustering scenario: Each cluster copies the complete content of its corresponding portion
+- **No clustering (SHOULD_CLUSTER: false)**: CONTENT field can be empty or placeholder. System will use original text automatically.
+- **Clustering (SHOULD_CLUSTER: true)**: Each cluster's CONTENT must be the complete copy of its corresponding portion from the original text. NOT a summary!
+- Verification: If clustering, ensure each CONTENT is non-empty and substantial.
 
-Now, begin your classification task. Remember: **Must copy content completely!**"""
+Now, begin your classification task."""
 
 # ===========================================
 # Structure Agent Prompt
@@ -260,6 +258,11 @@ Based on the validation result, create a NEW node that:
 2. **Preserves correct information** from old nodes (supported by validation evidence)
 3. **Corrects wrong information** based on validation findings
 4. **Integrates supplementary details** from multiple nodes
+5. **IMPORTANT: Retains valuable content** from conflicting nodes:
+   - Even if a node contains incorrect information, it may have valuable supplementary details
+   - Structure the content similar to Structure Agent output (with clear sections)
+   - Preserve non-conflicting factual information, examples, context, or explanations
+   - Only discard information that is directly contradicted by validation evidence
 
 ---
 
@@ -390,6 +393,10 @@ PLANNING_PROMPT = """You are an incremental task planning expert responsible for
 
 2. **Post-Cross-Validation Handling**:
    - **Critical Judgment**: Check context of most recently completed CROSS_VALIDATE task
+   - **Check merged node information**:
+     - If new_memory_nodes contains a node with `merge_description` field, this is a merged node from conflict resolution
+     - Review the merge_description to understand which old nodes were merged and what information was kept/corrected
+     - Identify tasks that produced the merged nodes and consider marking them as outdated if their premise was incorrect
    - **If validation result overturns premise of previous tasks**:
      - Must **overturn conclusions based on incorrect premises**
      - Generate new search task, **re-search based on correct information**
@@ -452,6 +459,11 @@ def format_candidates(candidates: list) -> str:
         lines.append(f"  Summary: {cand.get('summary', 'N/A')[:100]}...")
         lines.append(f"  Topic: {cand.get('context', 'N/A')}")
         lines.append(f"  Keywords: {', '.join(cand.get('keywords', []))}")
+
+        # If merged node, add source information
+        merge_desc = cand.get('merge_description')
+        if merge_desc:
+            lines.append(f"  [Merged Node] Merge Info: {merge_desc}")
     return "\n".join(lines)
 
 

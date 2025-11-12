@@ -1,7 +1,7 @@
 """
-Agent 基础类
+Agent Base Class
 
-所有 LLM 驱动的 Agent 的基类
+Base class for all LLM-driven Agents
 """
 
 import json
@@ -12,32 +12,32 @@ logger = logging.getLogger(__name__)
 
 
 class BaseAgent:
-    """Agent 基类"""
+    """Base class for all agents"""
 
     def __init__(self, llm_client):
         """
-        初始化 Agent
+        Initialize Agent
 
         Args:
-            llm_client: LLMClient 实例
+            llm_client: LLMClient instance
         """
         from src.utils.llm_client import LLMClient
 
-        # 类型检查（支持duck typing用于测试）
+        # Type check (supports duck typing for testing)
         if not (isinstance(llm_client, LLMClient) or hasattr(llm_client, 'call')):
-            raise TypeError("llm_client 必须是 LLMClient 实例或具有 call 方法的对象")
+            raise TypeError("llm_client must be an LLMClient instance or an object with a call method")
 
         self.llm_client = llm_client
 
     def _call_llm(self, prompt: str) -> str:
         """
-        调用 LLM
+        Call LLM
 
         Args:
-            prompt: 输入 prompt
+            prompt: Input prompt
 
         Returns:
-            LLM 响应
+            LLM response
         """
         try:
             response = self.llm_client.call(prompt)
@@ -48,30 +48,30 @@ class BaseAgent:
 
     def _fix_json_string(self, json_str: str) -> str:
         """
-        尝试修复常见的 JSON 字符串错误
+        Attempt to fix common JSON string errors
 
         Args:
-            json_str: 可能有错误的 JSON 字符串
+            json_str: Potentially malformed JSON string
 
         Returns:
-            修复后的 JSON 字符串
+            Fixed JSON string
         """
-        # 1. 移除 JSON 前后的多余空白
+        # 1. Remove extra whitespace before/after JSON
         json_str = json_str.strip()
 
-        # 2. 检查并补全缺失的结束括号
+        # 2. Check and add missing closing braces
         open_braces = json_str.count('{')
         close_braces = json_str.count('}')
         if open_braces > close_braces:
             json_str += '}' * (open_braces - close_braces)
 
-        # 3. 检查并补全缺失的结束方括号
+        # 3. Check and add missing closing brackets
         open_brackets = json_str.count('[')
         close_brackets = json_str.count(']')
         if open_brackets > close_brackets:
             json_str += ']' * (open_brackets - close_brackets)
 
-        # 4. 尝试修复末尾的逗号（JSON 不允许末尾逗号）
+        # 4. Attempt to fix trailing commas (JSON doesn't allow trailing commas)
         import re
         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
 
@@ -79,19 +79,19 @@ class BaseAgent:
 
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
         """
-        解析 JSON 响应
+        Parse JSON response
 
         Args:
-            response: LLM 返回的字符串
+            response: String returned by LLM
 
         Returns:
-            解析后的字典
+            Parsed dictionary
         """
         try:
-            # 尝试直接解析
+            # Try direct parsing
             return json.loads(response)
         except json.JSONDecodeError as e:
-            # 尝试提取 ```json 代码块
+            # Try extracting ```json code block
             if "```json" in response:
                 try:
                     parts = response.split("```json", 1)
@@ -99,52 +99,51 @@ class BaseAgent:
                         json_part = parts[1].split("```", 1)
                         if len(json_part) > 0:
                             json_str = json_part[0].strip()
-                            # ✅ 尝试修复 JSON
+                            # Try to fix JSON
                             json_str = self._fix_json_string(json_str)
                             return json.loads(json_str)
                 except (IndexError, json.JSONDecodeError) as e:
                     pass
 
-            # 尝试提取 ``` 代码块（不带 json 标记）
+            # Try extracting ``` code block (without json marker)
             if "```" in response and "```json" not in response:
                 try:
                     parts = response.split("```", 2)
                     if len(parts) >= 3:
                         json_str = parts[1].strip()
-                        # ✅ 尝试修复 JSON
+                        # Try to fix JSON
                         json_str = self._fix_json_string(json_str)
                         return json.loads(json_str)
                 except (IndexError, json.JSONDecodeError) as e:
                     pass
 
-            # 尝试提取 JSON 对象
+            # Try extracting JSON object
             start = response.find('{')
             end = response.rfind('}') + 1
             if start != -1 and end > start:
                 try:
                     json_str = response[start:end]
-                    # ✅ 尝试修复 JSON
+                    # Try to fix JSON
                     json_str = self._fix_json_string(json_str)
                     return json.loads(json_str)
                 except json.JSONDecodeError as e:
                     pass
 
-            # 尝试提取数组
+            # Try extracting array
             start = response.find('[')
             end = response.rfind(']') + 1
             if start != -1 and end > start:
                 try:
                     json_str = response[start:end]
-                    # ✅ 尝试修复 JSON
+                    # Try to fix JSON
                     json_str = self._fix_json_string(json_str)
                     return json.loads(json_str)
                 except json.JSONDecodeError as e:
                     pass
 
-            # ✅ 改进：显示更详细的错误信息和响应的首尾部分
+            # Improved: Show more detailed error info and response head/tail
             logger.error(f"JSON parsing failed, response length: {len(response)} characters")
             logger.error(f"First 500 characters of response: {response[:500]}")
             logger.error(f"Last 500 characters of response: {response[-500:]}")
 
-            raise ValueError(f"无法解析 JSON 响应")
-
+            raise ValueError(f"Unable to parse JSON response")
