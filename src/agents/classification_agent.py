@@ -4,9 +4,8 @@ Classification/Clustering Agent
 Responsibility: Classify/cluster long context by topics
 """
 
-import json
 import logging
-from typing import Optional, List
+from typing import List
 from dataclasses import dataclass
 from src.agents.base_agent import BaseAgent
 from src.prompts.agent_prompts import CLASSIFICATION_PROMPT
@@ -18,23 +17,18 @@ logger = logging.getLogger(__name__)
 class ClassificationInput:
     """Classification Agent input"""
     context: str  # Long context text (may be very long)
-    task_goal: Optional[str] = None  # Overall task goal (for reference)
-    current_task: Optional[str] = None  # Current subtask (for reference, helps identify important info)
 
 
 @dataclass
 class Cluster:
     """Clustering result"""
     cluster_id: str  # Cluster ID
-    context: str  # One-sentence topic description
-    content: str  # Original text content belonging to this topic
-    keywords: List[str]  # Keyword list
+    content: str  # Original text chunk (verbatim)
 
 
 @dataclass
 class ClassificationOutput:
     """Classification Agent output"""
-    should_cluster: bool  # Whether clustering is needed
     clusters: List[Cluster]  # Cluster list
 
 
@@ -107,7 +101,7 @@ class ClassificationAgent(BaseAgent):
         Returns:
             ClassificationOutput instance
         """
-        prompt = self._build_prompt(input_data.context, input_data.task_goal, input_data.current_task)
+        prompt = self._build_prompt(input_data.context)
 
         # Log LLM input
         logger.debug("="*80)
@@ -143,31 +137,24 @@ class ClassificationAgent(BaseAgent):
         all_clusters = []
         for i, chunk in enumerate(chunks, 1):
             chunk_input = ClassificationInput(
-                context=chunk,
-                task_goal=input_data.task_goal
+                context=chunk
             )
             chunk_output = self._classify_single_chunk(chunk_input)
             all_clusters.extend(chunk_output.clusters)
 
-        return ClassificationOutput(should_cluster=True, clusters=all_clusters)
+        return ClassificationOutput(clusters=all_clusters)
 
-    def _build_prompt(self, context: str, task_goal: Optional[str], current_task: Optional[str]) -> str:
+    def _build_prompt(self, context: str) -> str:
         """
         Build prompt
 
         Args:
             context: Context content
-            task_goal: Overall task goal (optional)
-            current_task: Current subtask (optional)
 
         Returns:
             Complete prompt
         """
-        return CLASSIFICATION_PROMPT.format(
-            task_goal=task_goal or "(none)",
-            current_task=current_task or "(none)",
-            context=context
-        )
+        return CLASSIFICATION_PROMPT.format(context=context)
 
     def _extract_content(self, content_str: str) -> str:
         """
@@ -198,111 +185,53 @@ class ClassificationAgent(BaseAgent):
             ClassificationOutput instance
         """
         try:
-            # Parse SHOULD_CLUSTER
-            should_cluster = False
-            if "SHOULD_CLUSTER:" in response:
-                should_cluster_line = [line for line in response.split('\n') if 'SHOULD_CLUSTER:' in line][0]
-                should_cluster = 'true' in should_cluster_line.lower()
+            # Normalize newlines
+            normalized = response.replace('\r', '')
 
-            # Split by === CLUSTER delimiter
-            cluster_blocks = response.split('=== CLUSTER')[1:]  # Skip first part (SHOULD_CLUSTER line)
+            if "SHOULD_CLUSTER" not in normalized:
+                raise ValueError("Missing SHOULD_CLUSTER marker")
+
+            cluster_blocks = [block for block in normalized.split('===') if 'CHUNK' in block]
 
             clusters = []
             for i, block in enumerate(cluster_blocks, 1):
                 try:
-                    # Extract cluster_id (from "c1 ===" or "c2 ===")
-                    cluster_id_match = block.split('===')[0].strip()
-                    cluster_id = cluster_id_match if cluster_id_match else f"c{i}"
+                    header, _, remainder = block.partition('===\n')
+                    header = header.strip()
+                    cluster_id = header.replace('CHUNK', '').strip() or f"chunk_{i}"
 
-                    # Extract CONTEXT
-                    context = ""
-                    if "CONTEXT:" in block:
-                        context_line = [line for line in block.split('\n') if line.strip().startswith('CONTEXT:')][0]
-                        context = context_line.split('CONTEXT:', 1)[1].strip()
+                    if "CONTENT_START" not in remainder or "CONTENT_END" not in remainder:
+                        raise ValueError("Missing content delimiters")
 
-                    # Extract KEYWORDS
-                    keywords = []
-                    if "KEYWORDS:" in block:
-                        keywords_line = [line for line in block.split('\n') if line.strip().startswith('KEYWORDS:')][0]
-                        keywords_str = keywords_line.split('KEYWORDS:', 1)[1].strip()
-                        keywords = [kw.strip() for kw in keywords_str.split(',')]
+                    content = self._extract_content(remainder)
 
-                    # Extract CONTENT (between CONTENT_START/CONTENT_END)
-                    content_from_llm = ""
-                    if "CONTENT_START" in block and "CONTENT_END" in block:
-                        content_from_llm = self._extract_content(block)
+                    if not content.strip():
+                        raise ValueError("Empty content chunk")
 
-                    # Create Cluster object (use LLM-returned content first, adjust later based on classification)
-                    cluster = Cluster(
-                        cluster_id=cluster_id,
-                        context=context,
-                        content=content_from_llm,  # Temporarily use LLM-returned content
-                        keywords=keywords
-                    )
-                    clusters.append(cluster)
+                    clusters.append(Cluster(cluster_id=cluster_id, content=content))
 
                 except Exception as e:
                     logger.warning(f"Failed to parse cluster block {i}: {str(e)}, skipping this block")
                     continue
 
-            # If clusters successfully parsed, adjust content based on classification
             if clusters:
-                # Determine: if not classifying (only 1 cluster), prefer original context
-                # If classifying (multiple clusters), use LLM-split content
-                if not should_cluster or len(clusters) == 1:
-                    # Not classifying: all clusters use full original context (safest)
-                    for cluster in clusters:
-                        cluster.content = input_data.context if input_data else cluster.content
-                else:
-                    # Need classification: validate and fix content
-                    for cluster in clusters:
-                        if not cluster.content or len(cluster.content.strip()) == 0:
-                            # If LLM didn't return content correctly, fallback to original context
-                            logger.warning(f"Cluster {cluster.cluster_id} has empty content, using full context as fallback")
-                            cluster.content = input_data.context if input_data else ""
+                return ClassificationOutput(clusters=clusters)
 
-                return ClassificationOutput(
-                    should_cluster=should_cluster,
-                    clusters=clusters
-                )
-            else:
-                raise ValueError("Failed to parse any clusters")
+            raise ValueError("Failed to parse any clusters")
 
         except Exception as e:
             logger.error(f"Failed to parse classification response: {str(e)}")
 
             # Fallback: Return default single cluster
-            import re
-
-            # If have input_data, extract keywords from full context
             if input_data and input_data.context:
                 content_fallback = input_data.context
-
-                # Extract keywords from full context (no truncation)
-                words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]{2,}', input_data.context)
-
-                # Add stopword filtering (common Chinese/English stopwords)
-                stopwords = {'the', 'a', 'an', 'for', 'to', 'of', 'in', 'on', 'at', 'is', 'are',
-                             'that', 'with', 'from', 'by'}
-                filtered_words = [w for w in words if w.lower() not in stopwords]
-
-                # Take first 8 after deduplication (use dict.fromkeys to preserve order)
-                fallback_keywords = list(dict.fromkeys(filtered_words))[:8] if filtered_words else ["default_category"]
-
-                # context preview only for display (keep 100-char truncation for context field)
-                context_preview = input_data.context[:100] + "..." if len(input_data.context) > 100 else input_data.context
             else:
-                context_preview = "Default category for parse failure"
                 content_fallback = response[:500]
-                fallback_keywords = ["default_category"]
 
             return ClassificationOutput(
-                should_cluster=False,
                 clusters=[Cluster(
-                    cluster_id="c1",
-                    context=context_preview,
-                    content=content_fallback,
-                    keywords=fallback_keywords
+                    cluster_id="chunk_1",
+                    content=content_fallback
                 )]
             )
 

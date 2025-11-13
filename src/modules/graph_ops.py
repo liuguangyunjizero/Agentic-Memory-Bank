@@ -3,7 +3,7 @@ Graph Operations Module
 """
 
 import logging
-from typing import List, Set
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -69,16 +69,6 @@ class GraphOperations:
             logger.error(f"Failed to add edge: {str(e)}")
             raise
 
-    def remove_edge(self, node_id1: str, node_id2: str) -> None:
-        """
-        Remove edge
-
-        Args:
-            node_id1: First node ID
-            node_id2: Second node ID
-        """
-        self.graph.remove_edge(node_id1, node_id2)
-
     def get_neighbors(self, node_id: str) -> List:
         """
         Get all neighbors of a node
@@ -123,44 +113,3 @@ class GraphOperations:
             f"Node merge completed: {deleted_count} old nodes -> new node {new_node.id[:8]}... "
             f"(new node starts with no edges)"
         )
-
-    def get_node(self, node_id: str):
-        """
-        Get node
-
-        Args:
-            node_id: Node ID
-
-        Returns:
-            Node instance, or None if doesn't exist
-        """
-        return self.graph.get_node(node_id)
-
-    def has_node(self, node_id: str) -> bool:
-        """
-        Check if node exists
-
-        Args:
-            node_id: Node ID
-
-        Returns:
-            True if exists, False otherwise
-        """
-        return self.graph.has_node(node_id)
-
-    def has_edge(self, node_id1: str, node_id2: str) -> bool:
-        """
-        Check if edge exists between two nodes
-
-        Args:
-            node_id1: First node ID
-            node_id2: Second node ID
-
-        Returns:
-            True if edge exists, False otherwise
-        """
-        return self.graph.has_edge(node_id1, node_id2)
-
-    def __repr__(self) -> str:
-        """Return module summary"""
-        return f"GraphOperations(nodes={self.graph.get_node_count()}, edges={self.graph.get_edge_count()})"

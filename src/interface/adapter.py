@@ -10,10 +10,9 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.agents.analysis_agent import AnalysisInput, NodeInfo
-from src.agents.classification_agent import ClassificationInput
 from src.agents.integration_agent import IntegrationInput, NodeWithNeighbors
 from src.agents.planning_agent import ConflictNotification, PlanningInput
 from src.agents.structure_agent import StructureInput
@@ -29,7 +28,7 @@ class MemoryBankAdapter:
     def __init__(self, memory_bank, retrieval_module) -> None:
         self.memory_bank = memory_bank
         self.retrieval = retrieval_module
-        self._pending_conflicts: List[List[str]] = []
+        self._pending_conflicts: List[Dict[str, Any]] = []
         logger.info("MemoryBankAdapter initialized")
 
     # Public API
@@ -91,13 +90,7 @@ class MemoryBankAdapter:
         query_text = insight_doc.current_task
         query_embedding = self.memory_bank.embedding_module.compute_embedding(query_text)
 
-        # Extract keywords: supports Chinese, English, numbers, filters stopwords
-        import re
-        words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]{2,}', query_text)
-        stopwords = {'the', 'a', 'an', 'for', 'to', 'of', 'in', 'on', 'at', 'is', 'are'}
-        query_keywords = [w for w in words if w.lower() not in stopwords][:10]
-        if not query_keywords:
-            query_keywords = [query_text]
+        query_keywords = insight_doc.current_task_keywords or [query_text]
 
         relevant_nodes = self.retrieval.hybrid_retrieval(
             query_embedding=query_embedding,
@@ -127,11 +120,13 @@ class MemoryBankAdapter:
 
         logger.info(f"_handle_conflict_resolution called, queue size = {len(self._pending_conflicts)}")
 
-        conflict_ids = self._get_conflicting_node_ids()
-        if not conflict_ids:
+        conflict_payload = self._get_conflicting_node_ids()
+        if not conflict_payload:
             logger.warning("No pending conflicts found; skipping resolution.")
             logger.warning(f"Current queue state: {self._pending_conflicts}")
             return
+        conflict_ids = conflict_payload.get("node_ids", [])
+        conflict_reason = conflict_payload.get("description", "Conflict detected")
 
         nodes_to_merge: List[NodeWithNeighbors] = []
         for node_id in conflict_ids:
@@ -148,6 +143,10 @@ class MemoryBankAdapter:
                     context=node.context,
                     keywords=node.keywords,
                     merge_description=node.merge_description,
+                    core_information=node.core_information,
+                    supporting_evidence=node.supporting_evidence,
+                    structure_summary=node.structure_summary,
+                    acquisition_logic=node.acquisition_logic,
                     neighbors=[
                         {"id": n.id, "context": n.context, "keywords": n.keywords}
                         for n in neighbours
@@ -159,13 +158,21 @@ class MemoryBankAdapter:
             logger.error("Unable to load conflict nodes; aborting integration.")
             return
 
+        affected_tasks = insight_doc.get_tasks_for_nodes(conflict_ids)
+        for task_desc in affected_tasks:
+            insight_doc.mark_task_failed(task_desc, conflict_reason)
+
         integration_output = self.memory_bank.integration_agent.run(
             IntegrationInput(nodes_to_merge=nodes_to_merge, validation_result=validation_result)
         )
 
         merged = integration_output.merged_node
         embedding_text = (
-            f"{merged['summary']} {merged['context']} {' '.join(merged['keywords'])}"
+            f"{merged.get('summary', '')} "
+            f"{merged.get('context', '')} "
+            f"{' '.join(merged.get('keywords', []))} "
+            f"{merged.get('core_information', '')} "
+            f"{merged.get('structure_summary', '')}"
         )
         new_node = QueryGraphNode(
             id=str(uuid.uuid4()),
@@ -175,6 +182,10 @@ class MemoryBankAdapter:
             embedding=self.memory_bank.embedding_module.compute_embedding(embedding_text),
             timestamp=time.time(),
             merge_description=integration_output.merge_description,
+            core_information=merged.get("core_information", merged["summary"]),
+            supporting_evidence=merged.get("supporting_evidence", ""),
+            structure_summary=merged.get("structure_summary", merged["summary"]),
+            acquisition_logic=merged.get("acquisition_logic"),
             links=[],
         )
 
@@ -218,8 +229,11 @@ class MemoryBankAdapter:
 
             for rel in analysis_output.relationships:
                 if rel.relationship == "conflict":
-                    new_conflict = [new_node.id, rel.existing_node_id]
-                    self._pending_conflicts.append(new_conflict)
+                    payload = {
+                        "node_ids": [new_node.id, rel.existing_node_id],
+                        "description": rel.conflict_description or "Conflict detected after merge"
+                    }
+                    self._pending_conflicts.append(payload)
                     logger.warning(
                         f"New conflict detected after merge: {new_node.id[:8]}... <-> {rel.existing_node_id[:8]}... "
                         f"Reason: {rel.conflict_description}"
@@ -232,7 +246,7 @@ class MemoryBankAdapter:
 
         if insight_doc.current_task:
             pending_desc = insight_doc.current_task
-            validation_context = merged["summary"]
+            validation_context = merged.get("core_information") or merged["summary"]
 
             insight_doc.add_completed_task(
                 task_type=TaskType.CROSS_VALIDATE,
@@ -250,13 +264,18 @@ class MemoryBankAdapter:
                     "keywords": new_node.keywords,
                     "summary": new_node.summary,
                     "merge_description": new_node.merge_description,
+                    "core_information": new_node.core_information,
+                    "supporting_evidence": new_node.supporting_evidence,
+                    "structure_summary": new_node.structure_summary,
                 }],
                 conflict_notification=None,
             )
         )
+        updated_tasks = insight_doc.enforce_failed_statuses(planning_output.completed_tasks)
         insight_doc.task_goal = planning_output.task_goal
-        insight_doc.completed_tasks = planning_output.completed_tasks
+        insight_doc.completed_tasks = updated_tasks
         insight_doc.current_task = planning_output.current_task
+        insight_doc.current_task_keywords = planning_output.current_task_keywords
 
         print(f"  Merged {len(conflict_ids)} conflicting node(s)")
         print("Conflict resolved\n")
@@ -266,91 +285,66 @@ class MemoryBankAdapter:
     def _handle_normal_task(self, context: str, insight_doc) -> None:
         print("\nOrganizing memory...")
 
-        # Extract current task (if no task, use task_goal)
         current_task = insight_doc.current_task if insight_doc.current_task else insight_doc.task_goal
 
-        print("  Classification Agent processing...")
-        classification_output = self.memory_bank.classification_agent.run(
-            ClassificationInput(
-                context=context,
-                task_goal=insight_doc.task_goal,
-                current_task=current_task
-            )
+        print("  Structure Agent processing...")
+        structure_output = self.memory_bank.structure_agent.run(
+            StructureInput(content=context)
         )
 
-        num_clusters = len(classification_output.clusters)
-        print(f"  Found {num_clusters} topic cluster(s)\n")
+        node = self.memory_bank._create_node(structure_output)
+        self.memory_bank.graph_ops.add_node(node)
+        self.retrieval.mark_index_dirty()
+        self.memory_bank.interaction_tree.add_entry(node.id, context)
+        insight_doc.register_task_node(current_task, node.id)
 
-        new_nodes: List[QueryGraphNode] = []
         conflicts: List[Dict[str, str]] = []
         total_relationships = 0
 
-        for idx, cluster in enumerate(classification_output.clusters, 1):
-            print(f"  Structure Agent processing... (cluster {idx}/{num_clusters})")
+        candidates = self.retrieval.hybrid_retrieval(
+            query_embedding=node.embedding,
+            query_keywords=node.keywords,
+            graph=self.memory_bank.query_graph,
+            exclude_ids={node.id},
+        )
 
-            structure_output = self.memory_bank.structure_agent.run(
-                StructureInput(
-                    content=cluster.content,
-                    context=cluster.context,
-                    keywords=cluster.keywords,
-                    current_task=current_task,
-                )
-            )
-
-            node = self.memory_bank._create_node(
-                summary=structure_output.summary,
-                context=cluster.context,
-                keywords=cluster.keywords,
-            )
-            self.memory_bank.graph_ops.add_node(node)
-            new_nodes.append(node)
-            self.retrieval.mark_index_dirty()
-
-            candidates = self.retrieval.hybrid_retrieval(
-                query_embedding=node.embedding,
-                query_keywords=node.keywords,
-                graph=self.memory_bank.query_graph,
-                exclude_ids={node.id},
-            )
-
-            if candidates:
-                print(f"  Analysis Agent processing... (node {idx}/{num_clusters})")
-                analysis_output = self.memory_bank.analysis_agent.run(
-                    AnalysisInput(
-                        new_node=NodeInfo(
-                            id=node.id,
-                            summary=node.summary,
-                            context=node.context,
-                            keywords=node.keywords,
-                            merge_description=node.merge_description,
-                        ),
-                        candidate_nodes=[
-                            NodeInfo(
-                                id=c.id,
-                                summary=c.summary,
-                                context=c.context,
-                                keywords=c.keywords,
-                                merge_description=c.merge_description,
-                            )
-                            for c in candidates
-                        ],
-                    )
-                )
-
-                conflict_rels = [
-                    rel for rel in analysis_output.relationships if rel.relationship == "conflict"
-                ]
-                if conflict_rels:
-                    for rel in conflict_rels:
-                        conflicts.append(
-                            {
-                                "new": node.id,
-                                "existing": rel.existing_node_id,
-                                "description": rel.conflict_description or "Conflict",
-                            }
+        if candidates:
+            print("  Analysis Agent processing...")
+            analysis_output = self.memory_bank.analysis_agent.run(
+                AnalysisInput(
+                    new_node=NodeInfo(
+                        id=node.id,
+                        summary=node.summary,
+                        context=node.context,
+                        keywords=node.keywords,
+                        merge_description=node.merge_description,
+                    ),
+                    candidate_nodes=[
+                        NodeInfo(
+                            id=c.id,
+                            summary=c.summary,
+                            context=c.context,
+                            keywords=c.keywords,
+                            merge_description=c.merge_description,
                         )
-                    continue  # skip related updates when conflict exists
+                        for c in candidates
+                    ],
+                )
+            )
 
+            conflict_rels = [
+                rel for rel in analysis_output.relationships if rel.relationship == "conflict"
+            ]
+            if conflict_rels:
+                for rel in conflict_rels:
+                    conflicts.append(
+                        {
+                            "new": node.id,
+                            "existing": rel.existing_node_id,
+                            "description": rel.conflict_description or "Conflict",
+                        }
+                    )
+            else:
                 for rel in analysis_output.relationships:
                     if rel.relationship != "related":
                         continue
@@ -362,21 +356,15 @@ class MemoryBankAdapter:
                     ):
                         self.memory_bank.graph_ops.add_edge(node.id, rel.existing_node_id)
 
-            # Save full context (full content classified by Classification Agent)
-            self.memory_bank.interaction_tree.add_entry(node.id, cluster.content)
-
-        print(f"  Created {len(new_nodes)} memory node(s)")
+        print("  Created 1 memory node(s)")
         print(f"  Established {total_relationships} relationship(s), {len(conflicts)} conflict(s)\n")
 
         conflict_notification = None
         if conflicts:
-            # Use union-find to detect chain conflicts and group them
             conflict_groups = self._find_conflict_groups(conflicts)
 
             if conflict_groups:
-                # Create conflict notification for Planning Agent (use first conflict group)
                 first_group = conflict_groups[0]
-                # Find conflict description for first group (use any conflict in group)
                 first_description = "Conflict"
                 for conflict in conflicts:
                     if conflict["new"] in first_group and conflict["existing"] in first_group:
@@ -388,10 +376,21 @@ class MemoryBankAdapter:
                     conflict_description=first_description,
                 )
 
-                # Add all conflict groups to pending queue
                 for group in conflict_groups:
-                    if group not in self._pending_conflicts:
-                        self._pending_conflicts.append(group)
+                    payload = {
+                        "node_ids": group,
+                        "description": first_description
+                        if group == first_group
+                        else self._describe_conflict_group(conflicts, group)
+                    }
+                    if payload not in self._pending_conflicts:
+                        self._pending_conflicts.append(payload)
+
+                for group in conflict_groups:
+                    reason = self._describe_conflict_group(conflicts, group)
+                    affected_tasks = insight_doc.get_tasks_for_nodes(group)
+                    for task_desc in affected_tasks:
+                        insight_doc.mark_task_failed(task_desc, reason)
 
         planning_output = self.memory_bank.planning_agent.run(
             PlanningInput(
@@ -402,16 +401,20 @@ class MemoryBankAdapter:
                         "context": node.context,
                         "keywords": node.keywords,
                         "summary": node.summary,
+                        "core_information": node.core_information,
+                        "supporting_evidence": node.supporting_evidence,
+                        "structure_summary": node.structure_summary,
                     }
-                    for node in new_nodes
                 ],
                 conflict_notification=conflict_notification,
             )
         )
 
+        updated_tasks = insight_doc.enforce_failed_statuses(planning_output.completed_tasks)
         insight_doc.task_goal = planning_output.task_goal
-        insight_doc.completed_tasks = planning_output.completed_tasks
+        insight_doc.completed_tasks = updated_tasks
         insight_doc.current_task = planning_output.current_task
+        insight_doc.current_task_keywords = planning_output.current_task_keywords
 
         print("Memory organized\n")
 
@@ -468,13 +471,24 @@ class MemoryBankAdapter:
 
         return result
 
-    def _get_conflicting_node_ids(self) -> Optional[List[str]]:
+    @staticmethod
+    def _describe_conflict_group(conflicts: List[Dict[str, str]], group: List[str]) -> str:
+        for conflict in conflicts:
+            if conflict["new"] in group and conflict["existing"] in group:
+                return conflict["description"]
+        return "Conflict detected among nodes"
+
+    def _get_conflicting_node_ids(self) -> Optional[Dict[str, Any]]:
         if self._pending_conflicts:
-            result = self._pending_conflicts.pop(0)
-            logger.info(f"Popped conflict group: {[nid[:8] for nid in result]}, remaining queue size = {len(self._pending_conflicts)}")
-            return result
+            payload = self._pending_conflicts.pop(0)
+            node_ids = payload.get("node_ids", [])
+            logger.info(
+                f"Popped conflict group: {[nid[:8] for nid in node_ids]}, remaining queue size = {len(self._pending_conflicts)}"
+            )
+            return payload
         logger.warning("_get_conflicting_node_ids: Queue is empty")
         return None
+
 
     def __repr__(self) -> str:
         return f"MemoryBankAdapter(pending_conflicts={len(self._pending_conflicts)})"

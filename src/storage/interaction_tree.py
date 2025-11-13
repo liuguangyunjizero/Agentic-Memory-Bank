@@ -50,10 +50,6 @@ class InteractionTree:
         """Get total entry count."""
         return len(self.node_entries)
 
-    def get_nodes_with_entries(self) -> List[str]:
-        """Get all node IDs that have entries."""
-        return list(self.node_entries.keys())
-
     def clear(self):
         """Clear all data (use with caution!)."""
         self.node_entries.clear()

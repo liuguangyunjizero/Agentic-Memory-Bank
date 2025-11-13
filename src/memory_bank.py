@@ -16,7 +16,7 @@ from src.modules.embedding import EmbeddingModule
 from src.modules.retrieval import RetrievalModule
 from src.modules.graph_ops import GraphOperations
 from src.agents.classification_agent import ClassificationAgent, ClassificationInput
-from src.agents.structure_agent import StructureAgent, StructureInput
+from src.agents.structure_agent import StructureAgent, StructureInput, StructureOutput
 from src.agents.analysis_agent import AnalysisAgent, AnalysisInput
 from src.agents.integration_agent import IntegrationAgent, IntegrationInput, NodeWithNeighbors
 from src.agents.planning_agent import PlanningAgent, PlanningInput, ConflictNotification
@@ -273,10 +273,9 @@ class MemoryBank:
             return {"answer": "No context provided", "stats": {}}
 
         # 1. Classification/Clustering (same as normal workflow)
-        print("\n[Classification] Calling Classification Agent...")
+        print("\n[Segmentation] Calling Classification Agent...")
         classification_output = self.classification_agent.run(ClassificationInput(
-            context=text_context,
-            task_goal="Context loading"  # Virtual task goal
+            context=text_context
         ))
 
         new_nodes = []
@@ -285,17 +284,10 @@ class MemoryBank:
 
             print(f"\n  [{i+1}/{len(classification_output.clusters)}] Calling Structure Agent...")
             structure_output = self.structure_agent.run(StructureInput(
-                content=cluster.content,
-                context=cluster.context,
-                keywords=cluster.keywords,
-                current_task="Context loading"
+                content=cluster.content
             ))
 
-            node = self._create_node(
-                summary=structure_output.summary,
-                context=cluster.context,
-                keywords=cluster.keywords
-            )
+            node = self._create_node(structure_output)
             self.graph_ops.add_node(node)
             new_nodes.append(node)
 
@@ -396,21 +388,24 @@ class MemoryBank:
         )
         return self.adapter.enhance_prompt(self.insight_doc)
 
-    def _create_node(self, summary: str, context: str, keywords: List[str]) -> QueryGraphNode:
+    def _create_node(self, structure_output: StructureOutput) -> QueryGraphNode:
         """
-        Create Query Graph node
-
-        Args:
-            summary: Summary
-            context: Context
-            keywords: List of keywords
-
-        Returns:
-            QueryGraphNode instance
+        Create Query Graph node from Structure Agent output
         """
         node_id = str(uuid.uuid4())
         timestamp = time.time()
-        text = f"{summary} {context} {' '.join(keywords)}"
+        summary = structure_output.summary
+        context = structure_output.context
+        keywords = structure_output.keywords
+        embedding_parts = [
+            summary,
+            context,
+            " ".join(keywords),
+            structure_output.core_information,
+            structure_output.structure_summary,
+            structure_output.supporting_evidence
+        ]
+        text = " ".join(part for part in embedding_parts if part).strip()
         embedding = self.embedding_module.compute_embedding(text)
 
         return QueryGraphNode(
@@ -420,6 +415,14 @@ class MemoryBank:
             keywords=keywords,
             embedding=embedding,
             timestamp=timestamp,
+            core_information=structure_output.core_information,
+            supporting_evidence=structure_output.supporting_evidence,
+            structure_summary=structure_output.structure_summary,
+            acquisition_logic=(
+                structure_output.acquisition_logic
+                if structure_output.acquisition_logic and structure_output.acquisition_logic.upper() != "N/A"
+                else None
+            ),
             links=[]  # Should be list, not set
         )
 

@@ -24,6 +24,10 @@ class QueryGraphNode:
         embedding: Semantic vector (numpy array)
         timestamp: Creation timestamp
         merge_description: Merge description (only for merged nodes)
+        core_information: Primary conclusion (verbatim when available)
+        supporting_evidence: Evidence snippets
+        structure_summary: Structured outline for the node
+        acquisition_logic: Tool/evidence chain description (if any)
         links: List of neighbor node IDs (related edges)
     """
     id: str
@@ -33,6 +37,10 @@ class QueryGraphNode:
     embedding: np.ndarray
     timestamp: float
     merge_description: Optional[str] = None
+    core_information: str = ""
+    supporting_evidence: str = ""
+    structure_summary: str = ""
+    acquisition_logic: Optional[str] = None
     links: List[str] = field(default_factory=list)
 
     def _add_link(self, neighbor_id: str):
@@ -53,6 +61,10 @@ class QueryGraphNode:
             "context": self.context,
             "keywords": self.keywords,
             "merge_description": self.merge_description,
+            "core_information": self.core_information,
+            "supporting_evidence": self.supporting_evidence,
+            "structure_summary": self.structure_summary,
+            "acquisition_logic": self.acquisition_logic,
             "embedding": self.embedding.tolist(),
             "timestamp": self.timestamp,
             "links": self.links
@@ -69,6 +81,10 @@ class QueryGraphNode:
             embedding=np.array(data["embedding"]),
             timestamp=data["timestamp"],
             merge_description=data.get("merge_description"),
+            core_information=data.get("core_information", ""),
+            supporting_evidence=data.get("supporting_evidence", ""),
+            structure_summary=data.get("structure_summary", ""),
+            acquisition_logic=data.get("acquisition_logic"),
             links=data.get("links", [])
         )
 

@@ -79,21 +79,6 @@ class EmbeddingModule:
 
         return embedding
 
-    @staticmethod
-    def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """
-        Calculate cosine similarity
-
-        Args:
-            vec1, vec2: Normalized vectors
-
-        Returns:
-            Similarity score [0, 1]
-        """
-        similarity = float(np.dot(vec1, vec2))
-        # Ensure in [0, 1] range (may slightly exceed due to floating point error)
-        return max(0.0, min(1.0, similarity))
-
     def get_embedding_dimension(self) -> int:
         """
         Get embedding dimension

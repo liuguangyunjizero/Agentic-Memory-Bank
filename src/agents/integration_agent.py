@@ -22,6 +22,10 @@ class NodeWithNeighbors:
     keywords: List[str]
     neighbors: List[Dict[str, Any]]  # [{"id": ..., "context": ..., "keywords": [...]}, ...]
     merge_description: Optional[str] = None
+    core_information: str = ""
+    supporting_evidence: str = ""
+    structure_summary: str = ""
+    acquisition_logic: Optional[str] = None
 
 
 @dataclass
@@ -34,7 +38,7 @@ class IntegrationInput:
 @dataclass
 class IntegrationOutput:
     """Integration Agent output"""
-    merged_node: Dict[str, Any]  # {"summary": ..., "context": ..., "keywords": [...]}
+    merged_node: Dict[str, Any]
     merge_description: str  # Description of merge operation
 
 
@@ -116,6 +120,10 @@ class IntegrationAgent(BaseAgent):
                 "summary": node.summary,
                 "context": node.context,
                 "keywords": node.keywords,
+                "core_information": node.core_information,
+                "supporting_evidence": node.supporting_evidence,
+                "structure_summary": node.structure_summary,
+                "acquisition_logic": node.acquisition_logic,
                 "neighbors": node.neighbors
             }
             for node in input_data.nodes_to_merge
@@ -140,13 +148,50 @@ class IntegrationAgent(BaseAgent):
         try:
             data = self._parse_json_response(response)
 
-            merged_node = data.get("merged_node", {})
+            merged_node = data.get("merged_node", {}) or {}
             description = data.get("merge_description", "Node merge")
 
-            logger.info(f"Integration completed: new node generated")
+            # Ensure merged node fields align with Structure Agent output
+            context = merged_node.get("context", "General context").strip()
+            keywords = merged_node.get("keywords") or []
+            if not isinstance(keywords, list):
+                keywords = []
+            keywords = [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+
+            core_information = merged_node.get("core_information", "").strip()
+            supporting_evidence = merged_node.get("supporting_evidence", "").strip()
+            structure_summary = merged_node.get("structure_summary", "").strip()
+            acquisition_logic = merged_node.get("acquisition_logic", "N/A").strip() or "N/A"
+            summary = merged_node.get("summary", "").strip()
+
+            summary_sections = []
+            if core_information:
+                summary_sections.append(f"**Core Information**:\n{core_information}")
+            if structure_summary:
+                summary_sections.append(f"**Structure Summary**:\n{structure_summary}")
+            if supporting_evidence:
+                summary_sections.append(f"**Supporting Evidence**:\n{supporting_evidence}")
+            if acquisition_logic and acquisition_logic.upper() != "N/A":
+                summary_sections.append(f"**Acquisition Logic**:\n{acquisition_logic}")
+            if summary_sections:
+                summary = "\n\n".join(summary_sections)
+            elif not summary:
+                summary = core_information or "Integrated summary"
+
+            sanitized_node = {
+                "summary": summary,
+                "context": context,
+                "keywords": keywords or ["general"],
+                "core_information": core_information or summary,
+                "supporting_evidence": supporting_evidence,
+                "structure_summary": structure_summary or summary,
+                "acquisition_logic": acquisition_logic
+            }
+
+            logger.info("Integration completed: new node generated")
 
             return IntegrationOutput(
-                merged_node=merged_node,
+                merged_node=sanitized_node,
                 merge_description=description
             )
 

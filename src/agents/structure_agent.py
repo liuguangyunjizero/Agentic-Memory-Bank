@@ -16,16 +16,19 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StructureInput:
     """Structure Agent input"""
-    content: str  # Original content of a single cluster
-    context: str  # Topic description of cluster (for reference)
-    keywords: List[str]  # Keywords of cluster (for reference)
-    current_task: str  # Current subtask (helps determine which info is important for current task)
+    content: str  # Original content chunk (verbatim)
 
 
 @dataclass
 class StructureOutput:
     """Structure Agent output"""
     summary: str  # Structured detailed summary
+    context: str
+    keywords: List[str]
+    core_information: str
+    supporting_evidence: str
+    structure_summary: str
+    acquisition_logic: str
 
 
 class StructureAgent(BaseAgent):
@@ -118,12 +121,7 @@ class StructureAgent(BaseAgent):
         Returns:
             Complete prompt
         """
-        return STRUCTURE_PROMPT.format(
-            current_task=input_data.current_task,
-            context=input_data.context,
-            keywords=", ".join(input_data.keywords),
-            content=input_data.content
-        )
+        return STRUCTURE_PROMPT.format(content=input_data.content)
 
     def _parse_response(self, response: str) -> StructureOutput:
         """
@@ -137,15 +135,51 @@ class StructureAgent(BaseAgent):
         """
         try:
             data = self._parse_json_response(response)
-            summary = data.get("summary", "")
 
+            context = data.get("context", "").strip()
+            keywords = data.get("keywords") or []
+            if not isinstance(keywords, list):
+                keywords = []
+            keywords = [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+
+            core_information = data.get("core_information", "").strip()
+            supporting_evidence = data.get("supporting_evidence", "").strip()
+            structure_summary = data.get("structure_summary", "").strip()
+            acquisition_logic = data.get("acquisition_logic", "N/A").strip() or "N/A"
+
+            summary_sections = []
+            if core_information:
+                summary_sections.append(f"**Core Information**:\n{core_information}")
+            if structure_summary:
+                summary_sections.append(f"**Structure Summary**:\n{structure_summary}")
+            if supporting_evidence:
+                summary_sections.append(f"**Supporting Evidence**:\n{supporting_evidence}")
+            if acquisition_logic and acquisition_logic.upper() != "N/A":
+                summary_sections.append(f"**Acquisition Logic**:\n{acquisition_logic}")
+
+            summary = "\n\n".join(summary_sections).strip()
             if not summary:
-                logger.warning("LLM returned empty summary, using raw response")
                 summary = response
 
-            return StructureOutput(summary=summary)
+            return StructureOutput(
+                summary=summary,
+                context=context or "General context",
+                keywords=keywords or ["general"],
+                core_information=core_information or summary,
+                supporting_evidence=supporting_evidence,
+                structure_summary=structure_summary or summary,
+                acquisition_logic=acquisition_logic
+            )
 
         except Exception as e:
             logger.error(f"Failed to parse structure response: {str(e)}")
             # Return raw response as summary
-            return StructureOutput(summary=response)
+            return StructureOutput(
+                summary=response,
+                context="General context",
+                keywords=["general"],
+                core_information=response,
+                supporting_evidence="",
+                structure_summary=response,
+                acquisition_logic="N/A"
+            )

@@ -70,6 +70,9 @@ class InsightDoc:
     task_goal: str
     completed_tasks: List[CompletedTask] = field(default_factory=list)
     current_task: str = ""
+    current_task_keywords: List[str] = field(default_factory=list)
+    task_node_map: Dict[str, List[str]] = field(default_factory=dict)
+    failed_tasks: Dict[str, str] = field(default_factory=dict)
 
     def add_completed_task(
         self,
@@ -91,21 +94,16 @@ class InsightDoc:
         """Set the current task (empty string for no task)."""
         self.current_task = task
 
-    def clear_current_task(self):
-        """Clear the current task."""
-        self.current_task = ""
-
-    def has_current_task(self) -> bool:
-        """Check if there is a current task."""
-        return bool(self.current_task)
-
     def to_dict(self) -> Dict[str, Any]:
         """Export as dictionary for persistence."""
         return {
             "doc_id": self.doc_id,
             "task_goal": self.task_goal,
             "completed_tasks": [task.to_dict() for task in self.completed_tasks],
-            "current_task": self.current_task
+            "current_task": self.current_task,
+            "current_task_keywords": self.current_task_keywords,
+            "task_node_map": self.task_node_map,
+            "failed_tasks": self.failed_tasks
         }
 
     @staticmethod
@@ -118,8 +116,53 @@ class InsightDoc:
                 CompletedTask.from_dict(task_data)
                 for task_data in data.get("completed_tasks", [])
             ],
-            current_task=data.get("current_task", "")
+            current_task=data.get("current_task", ""),
+            current_task_keywords=data.get("current_task_keywords", []),
+            task_node_map=data.get("task_node_map", {}),
+            failed_tasks=data.get("failed_tasks", {})
         )
+
+    def register_task_node(self, task_description: str, node_id: str) -> None:
+        """Associate a node with the task description."""
+        task_key = task_description or self.task_goal or "default"
+        nodes = self.task_node_map.setdefault(task_key, [])
+        if node_id not in nodes:
+            nodes.append(node_id)
+
+    def get_tasks_for_nodes(self, node_ids: List[str]) -> List[str]:
+        """Return task descriptions that produced any of the given nodes."""
+        result = []
+        node_set = set(node_ids)
+        for task_desc, nodes in self.task_node_map.items():
+            if any(n in node_set for n in nodes):
+                result.append(task_desc)
+        return result
+
+    def mark_task_failed(self, task_description: str, reason: str = "") -> None:
+        """Mark a task as failed and update its context."""
+        if not task_description:
+            return
+        self.failed_tasks[task_description] = reason or "Failed"
+        for task in self.completed_tasks:
+            if task.description == task_description:
+                task.status = "Failed"
+                if reason:
+                    task.context = reason
+        # Remove obsolete node mapping to avoid reusing invalidated context
+        if task_description in self.task_node_map:
+            del self.task_node_map[task_description]
+
+    def enforce_failed_statuses(self, tasks: List[CompletedTask]) -> List[CompletedTask]:
+        """Ensure tasks marked failed stay failed even after planner updates."""
+        if not self.failed_tasks:
+            return tasks
+        for task in tasks:
+            reason = self.failed_tasks.get(task.description)
+            if reason is not None:
+                task.status = "Failed"
+                if reason:
+                    task.context = reason
+        return tasks
 
     def __repr__(self) -> str:
         """Return string representation."""

@@ -35,6 +35,7 @@ class PlanningOutput:
     task_goal: str
     completed_tasks: List[CompletedTask]  # List of CompletedTask objects
     current_task: str  # Empty string means no task
+    current_task_keywords: List[str]
 
 
 class PlanningAgent(BaseAgent):
@@ -121,6 +122,8 @@ class PlanningAgent(BaseAgent):
         current_task_str = "(none)"
         if input_data.insight_doc.current_task:
             current_task_str = f"Currently executing: {input_data.insight_doc.current_task}"
+        current_keywords = input_data.insight_doc.current_task_keywords
+        current_keywords_str = ", ".join(current_keywords) if current_keywords else "(none)"
 
         # Format new memory nodes
         new_memory_str = "(none)"
@@ -151,6 +154,7 @@ class PlanningAgent(BaseAgent):
             task_goal=input_data.insight_doc.task_goal,
             completed_tasks=completed_tasks_str,
             current_task=current_task_str,
+            current_task_keywords=current_keywords_str,
             new_memory_nodes=new_memory_str,
             conflict_notification=conflict_str
         )
@@ -187,10 +191,16 @@ class PlanningAgent(BaseAgent):
                 f"Planning completed: completed={len(completed_tasks)}, current_task={'yes' if current_task else 'no'}"
             )
 
+            keywords = data.get("current_task_keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+            keywords = [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+
             return PlanningOutput(
                 task_goal=task_goal,
                 completed_tasks=completed_tasks,
-                current_task=current_task
+                current_task=current_task,
+                current_task_keywords=keywords
             )
 
         except Exception as e:
