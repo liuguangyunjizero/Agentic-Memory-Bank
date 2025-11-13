@@ -30,7 +30,6 @@ class MemoryBankAdapter:
         self.memory_bank = memory_bank
         self.retrieval = retrieval_module
         self._pending_conflicts: List[List[str]] = []
-        self._merge_depth: int = 0  # Current recursive merge depth
         logger.info("MemoryBankAdapter initialized")
 
     # Public API
@@ -128,169 +127,139 @@ class MemoryBankAdapter:
 
         logger.info(f"_handle_conflict_resolution called, queue size = {len(self._pending_conflicts)}")
 
-        # Recursive depth check
-        self._merge_depth += 1
-        try:
-            if self._merge_depth > self.memory_bank.config.MAX_MERGE_DEPTH:
-                logger.warning(
-                    f"Max merge depth ({self.memory_bank.config.MAX_MERGE_DEPTH}) reached. "
-                    f"Stopping conflict resolution to prevent infinite recursion."
+        conflict_ids = self._get_conflicting_node_ids()
+        if not conflict_ids:
+            logger.warning("No pending conflicts found; skipping resolution.")
+            logger.warning(f"Current queue state: {self._pending_conflicts}")
+            return
+
+        nodes_to_merge: List[NodeWithNeighbors] = []
+        for node_id in conflict_ids:
+            node = self.memory_bank.query_graph.get_node(node_id)
+            if not node:
+                logger.warning("Conflict node missing: %s", node_id)
+                continue
+
+            neighbours = self.memory_bank.graph_ops.get_neighbors(node_id)
+            nodes_to_merge.append(
+                NodeWithNeighbors(
+                    id=node.id,
+                    summary=node.summary,
+                    context=node.context,
+                    keywords=node.keywords,
+                    merge_description=node.merge_description,
+                    neighbors=[
+                        {"id": n.id, "context": n.context, "keywords": n.keywords}
+                        for n in neighbours
+                    ],
                 )
-                print(f"Maximum merge depth reached. Some conflicts may remain unresolved.")
-                self._pending_conflicts.clear()  # Clear queue to avoid further processing
-                return
+            )
 
-            conflict_ids = self._get_conflicting_node_ids()
-            if not conflict_ids:
-                logger.warning("No pending conflicts found; skipping resolution.")
-                logger.warning(f"Current queue state: {self._pending_conflicts}")
-                return
+        if not nodes_to_merge:
+            logger.error("Unable to load conflict nodes; aborting integration.")
+            return
 
-            nodes_to_merge: List[NodeWithNeighbors] = []
-            for node_id in conflict_ids:
-                node = self.memory_bank.query_graph.get_node(node_id)
-                if not node:
-                    logger.warning("Conflict node missing: %s", node_id)
-                    continue
+        integration_output = self.memory_bank.integration_agent.run(
+            IntegrationInput(nodes_to_merge=nodes_to_merge, validation_result=validation_result)
+        )
 
-                neighbours = self.memory_bank.graph_ops.get_neighbors(node_id)
-                nodes_to_merge.append(
-                    NodeWithNeighbors(
-                        id=node.id,
-                        summary=node.summary,
-                        context=node.context,
-                        keywords=node.keywords,
-                        merge_description=node.merge_description,
-                        neighbors=[
-                            {"id": n.id, "context": n.context, "keywords": n.keywords}
-                            for n in neighbours
-                        ],
+        merged = integration_output.merged_node
+        embedding_text = (
+            f"{merged['summary']} {merged['context']} {' '.join(merged['keywords'])}"
+        )
+        new_node = QueryGraphNode(
+            id=str(uuid.uuid4()),
+            summary=merged["summary"],
+            context=merged["context"],
+            keywords=merged["keywords"],
+            embedding=self.memory_bank.embedding_module.compute_embedding(embedding_text),
+            timestamp=time.time(),
+            merge_description=integration_output.merge_description,
+            links=[],
+        )
+
+        self.memory_bank.graph_ops.merge_nodes(conflict_ids, new_node)
+        self.retrieval.mark_index_dirty()
+
+        self.memory_bank.interaction_tree.add_entry(new_node.id, validation_result)
+
+        logger.info("Re-analyzing relationships for merged node...")
+
+        candidates = self.retrieval.hybrid_retrieval(
+            query_embedding=new_node.embedding,
+            query_keywords=new_node.keywords,
+            graph=self.memory_bank.query_graph,
+            exclude_ids={new_node.id}
+        )
+
+        if candidates:
+            new_node_info = NodeInfo(
+                id=new_node.id,
+                summary=new_node.summary,
+                context=new_node.context,
+                keywords=new_node.keywords,
+            )
+
+            candidate_nodes = [
+                NodeInfo(
+                    id=node.id,
+                    summary=node.summary,
+                    context=node.context,
+                    keywords=node.keywords,
+                )
+                for node in candidates
+            ]
+
+            analysis_input = AnalysisInput(
+                new_node=new_node_info,
+                candidate_nodes=candidate_nodes
+            )
+            analysis_output = self.memory_bank.analysis_agent.run(analysis_input)
+
+            for rel in analysis_output.relationships:
+                if rel.relationship == "conflict":
+                    new_conflict = [new_node.id, rel.existing_node_id]
+                    self._pending_conflicts.append(new_conflict)
+                    logger.warning(
+                        f"New conflict detected after merge: {new_node.id[:8]}... <-> {rel.existing_node_id[:8]}... "
+                        f"Reason: {rel.conflict_description}"
                     )
-                )
-
-            if not nodes_to_merge:
-                logger.error("Unable to load conflict nodes; aborting integration.")
-                return
-
-            integration_output = self.memory_bank.integration_agent.run(
-                IntegrationInput(nodes_to_merge=nodes_to_merge, validation_result=validation_result)
-            )
-
-            merged = integration_output.merged_node
-            embedding_text = (
-                f"{merged['summary']} {merged['context']} {' '.join(merged['keywords'])}"
-            )
-            new_node = QueryGraphNode(
-                id=str(uuid.uuid4()),
-                summary=merged["summary"],
-                context=merged["context"],
-                keywords=merged["keywords"],
-                embedding=self.memory_bank.embedding_module.compute_embedding(embedding_text),
-                timestamp=time.time(),
-                merge_description=integration_output.merge_description,
-                links=[],
-            )
-
-            self.memory_bank.graph_ops.merge_nodes(conflict_ids, new_node)
-            self.retrieval.mark_index_dirty()
-
-            # Create interaction tree entry for cross_validate operation (save full validation context)
-            self.memory_bank.interaction_tree.add_entry(new_node.id, validation_result)
-
-            # Re-analyze relationships for merged node
-            logger.info("Re-analyzing relationships for merged node...")
-
-            # Use hybrid_retrieval to retrieve candidate nodes
-            candidates = self.retrieval.hybrid_retrieval(
-                query_embedding=new_node.embedding,
-                query_keywords=new_node.keywords,
-                graph=self.memory_bank.query_graph,
-                exclude_ids={new_node.id}
-            )
-
-            if candidates:
-                # Prepare Analysis Agent input
-                new_node_info = NodeInfo(
-                    id=new_node.id,
-                    summary=new_node.summary,
-                    context=new_node.context,
-                    keywords=new_node.keywords,
-                )
-
-                candidate_nodes = [
-                    NodeInfo(
-                        id=node.id,
-                        summary=node.summary,
-                        context=node.context,
-                        keywords=node.keywords,
+                elif rel.relationship == "related":
+                    self.memory_bank.graph_ops.add_edge(new_node.id, rel.existing_node_id)
+                    logger.info(
+                        f"Established relationship: {new_node.id[:8]}... <-> {rel.existing_node_id[:8]}..."
                     )
-                    for node in candidates
-                ]
 
-                # Call Analysis Agent to analyze relationships
-                analysis_input = AnalysisInput(
-                    new_node=new_node_info,
-                    candidate_nodes=candidate_nodes
-                )
-                analysis_output = self.memory_bank.analysis_agent.run(analysis_input)
+        if insight_doc.current_task:
+            pending_desc = insight_doc.current_task
+            validation_context = merged["summary"]
 
-                # Process analysis results
-                for rel in analysis_output.relationships:
-                    if rel.relationship == "conflict":
-                        # Found new conflict, add to queue (don't process immediately, let Planning Agent handle next round)
-                        new_conflict = [new_node.id, rel.existing_node_id]
-                        self._pending_conflicts.append(new_conflict)
-                        logger.warning(
-                            f"New conflict detected after merge: {new_node.id[:8]}... <-> {rel.existing_node_id[:8]}... "
-                            f"Reason: {rel.conflict_description}"
-                        )
-                    elif rel.relationship == "related":
-                        # Establish related edge
-                        self.memory_bank.graph_ops.add_edge(new_node.id, rel.existing_node_id)
-                        logger.info(
-                            f"Established relationship: {new_node.id[:8]}... <-> {rel.existing_node_id[:8]}..."
-                        )
-                    # unrelated cases don't need handling, keep isolated
-
-            if insight_doc.current_task:
-                pending_desc = insight_doc.current_task
-                # Use full merged summary as validation context
-                validation_context = merged["summary"]
-
-                insight_doc.add_completed_task(
-                    task_type=TaskType.CROSS_VALIDATE,
-                    description=pending_desc,
-                    status="Success",
-                    context=validation_context,
-                )
-
-            planning_output = self.memory_bank.planning_agent.run(
-                PlanningInput(
-                    insight_doc=insight_doc,
-                    new_memory_nodes=[{  # Pass new merged node info to Planning Agent
-                        "id": new_node.id,
-                        "context": new_node.context,
-                        "keywords": new_node.keywords,
-                        "summary": new_node.summary,  # Include full validation result
-                        "merge_description": new_node.merge_description,  # Include merge description
-                    }],
-                    conflict_notification=None,
-                )
+            insight_doc.add_completed_task(
+                task_type=TaskType.CROSS_VALIDATE,
+                description=pending_desc,
+                status="Success",
+                context=validation_context,
             )
-            insight_doc.task_goal = planning_output.task_goal
-            insight_doc.completed_tasks = planning_output.completed_tasks
-            insight_doc.current_task = planning_output.current_task
 
-            print(f"  Merged {len(conflict_ids)} conflicting node(s)")
-            print("Conflict resolved\n")
+        planning_output = self.memory_bank.planning_agent.run(
+            PlanningInput(
+                insight_doc=insight_doc,
+                new_memory_nodes=[{
+                    "id": new_node.id,
+                    "context": new_node.context,
+                    "keywords": new_node.keywords,
+                    "summary": new_node.summary,
+                    "merge_description": new_node.merge_description,
+                }],
+                conflict_notification=None,
+            )
+        )
+        insight_doc.task_goal = planning_output.task_goal
+        insight_doc.completed_tasks = planning_output.completed_tasks
+        insight_doc.current_task = planning_output.current_task
 
-        finally:
-            # Recursive depth management
-            self._merge_depth -= 1
-            # If conflict queue is empty, reset merge depth
-            if len(self._pending_conflicts) == 0:
-                self._merge_depth = 0
-                logger.info("All conflicts resolved, merge depth reset to 0")
+        print(f"  Merged {len(conflict_ids)} conflicting node(s)")
+        print("Conflict resolved\n")
 
     # Normal task handling
 

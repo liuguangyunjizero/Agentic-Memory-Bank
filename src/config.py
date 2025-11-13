@@ -69,12 +69,6 @@ class Config:
         self.RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "5"))
         self.RETRIEVAL_ALPHA = float(os.getenv("RETRIEVAL_ALPHA", "0.5"))
 
-        # Merge configuration
-        self.MAX_MERGE_DEPTH = int(os.getenv("MAX_MERGE_DEPTH", "3"))
-        self.REPORT_CONFLICTS_IN_CONTEXT_LOADING = bool(
-            os.getenv("REPORT_CONFLICTS_IN_CONTEXT_LOADING", "True").lower() == "true"
-        )
-
         # Search API configuration
         self.SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
         self.JINA_API_KEY = os.getenv("JINA_API_KEY", "")

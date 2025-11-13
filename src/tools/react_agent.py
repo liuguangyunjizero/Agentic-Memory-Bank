@@ -91,6 +91,7 @@ class MultiTurnReactAgent:
             iterations_left -= 1
 
             # 2.1 Call LLM
+            print("\n💭 Thinking...", flush=True)
             try:
                 response = self.llm_client.call(
                     messages,

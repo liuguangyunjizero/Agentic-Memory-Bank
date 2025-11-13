@@ -1,405 +1,1190 @@
-# Agentic Memory Bank: 面向任务的长上下文管理的层级化图结构多智能体系统
+# Agentic Memory Bank: 面向长上下文任务的层级化记忆管理系统
 
 ## 系统概述
 
-### 设计目标
+Agentic Memory Bank 是一个专门设计用于处理长上下文场景的记忆管理系统。系统采用三层存储架构（任务状态层、语义记忆图层、交互历史层），配合多个专业化智能体，实现对长文本、多轮对话和复杂推理任务的结构化管理。
 
-Agentic Memory Bank 是一个由多个专门化智能体管理的层级化图结构系统，旨在处理面向任务的长上下文场景。该系统提供了一种可以集成到不同外部 Agent 框架的记忆管理范式。系统专门设计用于解决单次任务的长上下文问题，而非构建从不断增长的记忆中持续学习的个性化长期记忆智能体。每次任务完成后，所有记忆都会被清理。
+### 核心设计理念
 
-### 应用场景
+**增量式规划**：系统不预先规划所有步骤，而是根据当前进展每次只决定下一步行动，能够动态适应执行结果并即时响应冲突。
 
-系统面向三种长上下文场景：
+**冲突检测与解决**：当系统发现记忆中存在矛盾信息时，会主动触发交叉验证流程，通过搜索权威来源来解决冲突，提升记忆可信度。
 
-**深度研究**：需要交叉引用权威来源和解决冲突信息的多源信息检索、验证和综合分析。
+**任务完成即清理**：系统专为单次任务设计，每次任务完成后清空所有记忆，确保下次任务从干净状态开始。不同于个性化长期记忆助手，本系统关注的是单次任务内的长上下文管理。
 
-**长文档问答**：理解和回答超过典型 LLM 上下文窗口的长文档相关问题。
+### 典型应用场景
 
-**多轮对话推理**：跨越涉及复杂推理链和工具使用的扩展对话的上下文管理。
+**深度研究任务**：需要从多个来源收集信息、交叉验证、解决信息冲突的研究型任务。例如："比较分析不同文献对某个历史事件的描述，找出共识和分歧点。"
+
+**长文档理解**：处理超出LLM单次上下文窗口的长文档。例如："这份50页的技术报告主要讲了什么？第3章和第7章的论证逻辑是否一致？"
+
+**多轮推理任务**：需要多次工具调用、多步推理的复杂问题。例如："调查某个技术框架，先了解它的核心架构，再找到相关实现案例，最后总结最佳实践。"
 
 ## 存储架构
 
-系统采用三层存储结构来管理长上下文信息。
+系统采用三层分离的存储结构，每层负责不同粒度的信息管理。
 
-### Insight Doc 层
+### 第一层：Insight Doc（任务状态层）
 
-Insight Doc 层以简洁的结构化形式管理任务执行状态，作为传递给外部框架的默认上下文，随着任务进展增量更新。
+这一层维护当前任务的执行状态，作为系统的"控制面板"。
 
-**核心组成部分**：
+**数据结构**：
+- `doc_id`：任务唯一标识符
+- `task_goal`：用户的原始问题或任务描述
+- `completed_tasks`：已完成的子任务列表，每个子任务包含：
+  - `type`：任务类型（NORMAL普通任务 / CROSS_VALIDATE冲突验证任务）
+  - `description`：任务的详细描述
+  - `status`：执行结果（success / failure）
+  - `context`：浓缩的1-2句话总结
+- `current_task`：当前待办任务（空字符串表示没有待办任务）
 
-任务目标存储用户的原始问题或任务描述。已完成任务列表维护已完成子任务的记录，每条记录包含任务类型、详细描述、执行状态和知识上下文的四元组。每种任务类型要么是由 Planning Agent 规划的常规子任务的 NORMAL 类型，要么是在检测到矛盾信息时触发的冲突解决任务的 CROSS_VALIDATE 类型。知识上下文是一到两句话的浓缩总结，包含成功执行后检索到的信息或推导出的见解。
+**增量式规划的体现**：
+系统不维护任务队列，`current_task`要么为空，要么包含单个任务描述。Planning Agent每次只根据当前状态决定下一步，而不是一次性规划所有步骤。这种设计让系统能够：
+- 根据执行结果动态调整计划
+- 在发现冲突时立即插入验证任务
+- 避免复杂的任务优先级管理
 
-当前任务字段采用增量式规划策略，存储空字符串表示没有待办任务，或存储单个任务字符串表示下一步。这种设计消除了对优先级队列或复杂任务排序机制的需求，允许 Planning Agent 仅根据当前进度决定下一步，而不是一次性规划所有步骤。这种方法能够动态适应执行结果并立即响应冲突。
+### 第二层：Query Graph（语义记忆图）
 
-**增量式规划理念**：
+这一层以图结构存储结构化的记忆节点，支持基于语义和关键词的快速检索。
 
-系统使用单步规划模式，Planning Agent 仅决定下一步行动而不是预先创建全面计划。这种设计提供基于每步结果的动态适应、无需维护优先级队列的降低复杂性，以及通过在检测到矛盾时将 Cross Validation 任务作为下一步的即时冲突响应。当前任务字段在大多数时候通常包含零个或一个任务。
+**节点设计**：
 
-### Query Graph 层
+每个节点代表一个主题聚类的压缩记忆，包含：
+- `id`：节点唯一标识符（UUID）
+- `summary`：结构化详细摘要（包含关键信息、证据、逻辑）
+- `context`：一句话主题描述
+- `keywords`：关键词列表（用于基于属性的检索）
+- `embedding`：语义向量（用于语义相似度检索）
+- `timestamp`：创建时间戳
+- `merge_description`：合并说明（仅合并节点有值）
+- `links`：相关节点的ID列表（表示related边）
 
-Query Graph 以图结构存储结构化的记忆摘要，支持高效的粗粒度检索。
+**边的类型**：
 
-**节点粒度**：
+Query Graph只有一种显式的边：`related边`，表示节点之间存在语义、主题或逻辑关联。
 
-一个 Query Graph 节点对应经过 Structure Agent 处理的主题聚类内容。在整理子任务的记忆时，Classification Agent 决定如何将子任务的上下文拆分或组合成主题类别。
+节点之间还可能存在`conflict关系`，但这不是图中的边，而是一种临时状态。当Memory Analysis Agent检测到两个节点内容矛盾时，会标记为conflict关系，触发交叉验证流程。验证完成后，冲突节点会被合并成新节点，conflict状态消失。
 
-**节点属性**：
+**检索策略**：
 
-每个节点包含唯一标识符、包含关键信息和证据的结构化详细摘要、作为上下文的简短一句话主题描述、用于基于属性检索的关键词列表、存储在内存中用于相似度检索可扩展到向量数据库存储的语义向量 embedding，以及创建时间戳。
+系统采用混合检索：
+1. **关键词检索**：基于BM25算法匹配节点的keywords字段
+2. **语义检索**：基于余弦相似度匹配embedding向量
+3. **混合计算**：最终分数 = α × 关键词分数 + (1-α) × 语义分数
 
-**关系和边**：
+检索流程：
+1. 根据混合分数选出top-k个候选节点
+2. 为每个候选节点附加其一跳邻居节点
+3. 按时间戳降序排列所有节点（候选节点+邻居节点）
+4. 返回给调用方
 
-严格来说，Query Graph 只有一种边类型：related 边，表示节点之间的语义、主题或逻辑关联，为无向边。节点之间可能存在特殊的关系状态，由 Memory Analysis Agent 确定而非边类型。conflict 状态表示内容相互矛盾触发 Cross Validation 工作流。related 状态表示语义、主题或逻辑关联建立 related 边。
+参数`k`（默认5）和`α`（默认0.5）可通过环境变量配置。
 
-**关系判断优先级**：
+### 第三层：Interaction Tree（交互历史层）
 
-系统使用优先级机制进行关系确定，conflict 优先于 related。工作流首先检查内容矛盾的 conflict 关系，然后如果不存在 conflict 则检查 related 关系。检测到冲突后，系统立即通过 Cross Validation 执行相应处理，节点最终被验证和合并。
+这一层存储每个记忆节点的原始完整上下文，支持深度检索时回溯细节。
 
-**检索方法**：
+**极简设计**：
 
-基于属性的检索使用关键词匹配。基于 embedding 的检索使用语义向量相似度。混合检索结合两者，使用可配置的 alpha 参数计算最终分数，公式为 alpha 乘以基于属性的分数加上一减 alpha 乘以基于 embedding 的分数。
-
-**检索流程**：
-
-筛选阶段使用相似度或混合分数选择 top-k 个候选节点。扩展阶段为每个候选节点附加完整属性的一跳邻居节点。排序阶段在返回结果前按时间戳降序排列所有节点，包括候选节点和邻居节点。
-
-top-k 值 k 是需要初始化的可配置参数，通常范围从 5 到 10。
-
-### Interaction Tree 层
-
-Interaction Tree 以只读的树结构存储细粒度的原始交互数据，支持多模态信息。树既不修改历史内容也不重写原始记录。当 Query Graph 节点合并时，系统只是将原始节点的 Interaction Tree 重新附加到合并后的新节点，并添加只读的合并事件元数据条目，解释哪些节点何时合并，便于上下文来源追溯。
-
-**结构特征**：
-
-每个 Query Graph 节点对应一个或多个 Interaction Tree。父节点存储完整的上下文文本，包括推理过程、工具调用和结果摘要。子节点存储来自用户上传或工具返回的多模态附件。
-
-**多模态附件设计**：
-
-多模态内容来自用户上传。当用户上传图片时，Adapter 首先将其保存到临时存储，等待外部框架完成识别任务，然后正式创建包含识别结果文本作为父节点和图片附件作为子节点的 Interaction Tree 节点。
-
-附件类型包括图片、PDF 原文等文档，以及代码片段和执行结果等代码。子节点属性包括父节点文本中引用的唯一标识符、指示图片、文档或代码类别的多模态类型，以及存储磁盘位置或云存储 URI 的文件路径而非文件内容本身。
-
-**存储策略**：
-
-系统有选择性地保留相关的重要多模态内容而非全部。通过文件路径索引访问实际文件，避免在节点属性中存储大量二进制数据或文本内容，提高存储效率和系统性能。
-
-**存储实现**：
-
-所有记忆包括 Query Graph 和 Interaction Tree 都存储在内存中。可选功能提供简单的持久化接口，将当前记忆导出为 JSON 文件。单次任务完成后所有内存中的记忆都会被清理。
-
-## 组件设计
-
-### 硬编码功能模块
-
-这些功能通过程序逻辑实现，不涉及 LLM 调用。
-
-**Embedding 计算模块**：
-
-该模块为文本内容生成语义向量。接受包括摘要和上下文的文本输入，产生 embedding 向量作为输出，调用如使用 all-MiniLM-L6-v2 模型的 sentence transformers 等 embedding API。对于存储，初始方法直接将 embedding 存储在内存中的 Query Graph 节点 embedding 属性中，可扩展选项是存储在如 Faiss 或 Chroma 的向量数据库中，节点仅保留 embedding ID 索引。
-
-**检索模块**：
-
-该模块基于 embedding 相似度执行候选节点检索。接受新节点 embedding 和包括 k 值和检索方法的检索参数作为输入，返回包含完整信息的 top-k 候选节点列表，包括标识符、摘要、上下文、关键词和时间戳。实现计算余弦相似度，可选地结合关键词匹配进行混合检索，返回 top-k 结果加上每个节点的一跳邻居。
-
-可配置的检索参数包括用于 top-k 检索的 k，需要初始化通常范围从 5 到 10，以及作为混合检索权重系数的 alpha，计算最终分数为 alpha 乘以基于属性的加上一减 alpha 乘以基于 embedding 的，也需要初始化通常范围从 0.3 到 0.7。
-
-**图操作模块**：
-
-该模块管理 Query Graph 的边和节点。功能包括创建节点、删除节点、创建 related 边、删除边、查询节点邻居，以及更新包括上下文、关键词和 embedding 的节点属性。实现使用基于字典的节点存储的自定义邻接表结构。
-
-### Agent 功能模块
-
-这些功能使用 LLM 进行智能判断和生成。
-
-**Classification Agent**：
-
-该智能体对长上下文执行基于主题的分类或聚类，为每个类别生成上下文和关键词描述。其目的是避免一次处理过长的上下文，在传递给 Structure Agent 之前进行分块。
-
-输入包括可能超过智能体窗口长度的长上下文文本，以及可选的当前任务描述以辅助分类决策。输出包括指示是否需要聚类的聚类判断布尔值，如果需要聚类则包括聚类列表，其中每个聚类包含唯一标识符、作为上下文的简短一句话主题描述、属于该主题的原始文本内容，以及关键词列表。
-
-**处理过长上下文**：
-
-当输入上下文超过智能体窗口长度时，系统使用分块策略。计算块大小为智能体窗口大小乘以可配置比率，通常约为 0.9 留 10% 余量。在段落或章节边界处将上下文拆分为块。每个块独立处理生成聚类。所有聚类直接传递给 Structure Agent 处理。
-
-**分类标准**：
-
-通常按主题分类。用户输入的原始问题应单独提取作为任务目标存储在 Insight Doc 中。
-
-**Structure Agent**：
-
-该智能体对分类后的单个主题内容执行结构化压缩，生成摘要抽象。输入包括单个聚类内容以及聚类上下文和关键词供参考。输出是包含关键信息、证据和逻辑的结构化详细摘要。
-
-**后续硬编码处理**：
-
-生成节点标识符为 UUID 或递增 ID。复制 Classification Agent 提供的上下文和关键词。读取当前时间戳。调用 Embedding 计算模块为摘要生成 embedding。组装完整节点并存储在 Query Graph 中。
-
-**优势**：
-
-一次只处理一个主题分类的上下文避免窗口溢出。
-
-**Memory Analysis Agent**：
-
-该智能体判断新节点和现有节点之间的关系，在可能的情况下通过单次 LLM 调用完成优先级排序的确定。工作流默认触发一次 LLM 调用，按顺序检查每个候选节点是否存在冲突然后是否有 related 关系，在命中任何关系后立即返回而不继续后续判断。顺序判断确保冲突关系优先处理，同时避免不必要的重复调用。
-
-输入包括带有摘要、上下文和关键词但明确排除 embedding 的新节点，以及检索模块返回的类似结构不包含 embedding 的候选节点列表。输出是关系列表，其中每个关系包含现有节点标识符、作为 conflict、related 或 unrelated 的关系类型，以及解释判断的推理。对于 conflict 关系，输出包括冲突描述。对于 related 关系，输出包括新节点和现有节点的更新上下文和关键词列表。
-
-**关系类型定义**：
-
-Unrelated 表示节点之间没有语义、主题或逻辑关联。Related 表示语义、主题或逻辑关联建立 related 边。Conflict 表示内容相互矛盾触发 Cross Validation 工作流。
-
-**判断标准**：
-
-智能体基于 prompt 规则自主判断，返回结构化输出。
-
-**后续硬编码处理**：
-
-对于 related 关系，调用图操作模块创建 related 边。对于冲突，标记冲突状态并传递给 Planning Agent。
-
-**Memory Integration Agent**：
-
-该智能体基于多个节点生成整合后的新节点内容。当 Memory Analysis Agent 判断需要在 Cross Validation 后合并的冲突关系时触发。
-
-输入包括要合并的节点列表及其标识符、摘要、上下文和关键词，每个节点的邻居列表及其标识符、上下文和关键词，以及外部框架返回的验证结果。输出包括合并节点内容，包含整合的详细摘要、综合的主题描述、整合的关键词列表，以及解释合并操作的 Interaction Tree 描述。
-
-**后续硬编码处理**：
-
-生成新节点标识符和时间戳。基于摘要、上下文和关键词计算新节点 embedding。继承所有要合并节点的边，去重确保如果多个节点共享公共邻居只保留一条边。基于 Interaction Tree 描述在 Interaction Tree 中记录合并操作。删除所有合并的节点及其边。
-
-**合并策略规则**：
-
-通过 prompt 预定义，包括基于时间戳保留更新的信息，综合所有节点的优势补充缺失信息，以及使用验证结果作为权威。
-
-**Planning Agent**：
-
-该智能体分析任务目标和记忆以制定和更新计划。输入包括 Insight Doc 任务状态层、新添加的带有摘要、上下文和关键词的 Query Graph 记忆节点，以及可选的冲突通知。输出是更新的 Insight Doc，包含任务目标描述、已完成子任务列表（每个子任务包括类型、描述、状态和上下文），以及当前任务字段。
-
-**策略**：
-
-增量式规划，每次迭代仅决定下一步，参考完整历史而不重新规划所有内容。动态调整，基于新记忆和任务执行结果灵活修改当前任务。冲突响应，在检测到冲突关系时规划 Cross Validation 任务作为下一步。
-
-**终止判断**：
-
-如果当前任务为空且所有子任务状态为成功，系统终止。否则继续执行。任务终止完全由 Planning Agent 自主判断，没有硬性的最大迭代限制，尽管系统有一个安全的最大迭代计数以防止无限循环。
-
-**可选优化**：
-
-使用经过监督微调或强化学习的专门模型。
-
-### 系统接口模块
-
-**Adapter**：
-
-Adapter 作为 Agentic Memory Bank 和外部框架之间的接口层，负责上下文拦截、增强和传输，以及多模态内容的临时管理。
-
-**设计定位**：
-
-Agentic Memory Bank 提供记忆管理范式，外部智能体框架如 ReAct 通过 Adapter 交互以实现结构化的长上下文管理。
-
-**标记格式规范**：
-
-为了提高系统的可解析性和与 ReAct 框架的兼容性，系统定义了标记模式。Task 标签包装 Insight Doc 内容。Memory 标签包装 Query Graph 记忆节点。Tool call 和 tool response 标签表示 Deep Retrieval 工具调用和响应。
-
-**功能一：多模态内容临时管理**：
-
-当用户上传如图片的多模态内容时，Adapter 处理临时存储和管理。临时存储工作流将上传的图片保存到临时目录，使用 Insight Doc 文档标识符作为键在内部维护临时存储映射，存储图片临时路径和类型信息而不立即创建 Interaction Tree 节点，等待 Planning Agent 识别待处理的多模态内容并规划识别任务。
-
-识别完成处理后，外部框架执行图片识别任务返回结果。Adapter 从临时存储提取图片信息，将图片从临时目录移动到正式存储目录，与识别结果一起创建完整的 Interaction Tree 节点，包括文本描述和图片附件，清理临时存储映射。
-
-**设计理由**：
-
-避免在识别前创建不完整的记忆节点。通过同时保存文本描述和附件确保数据完整性。避免污染持久化数据，因为临时状态不会被序列化。遵循完整的正常记忆创建工作流。
-
-**功能二：Prompt 增强**：
-
-增强工作流发生在初始化和每个执行循环开始时。步骤包括读取 Insight Doc 以获取当前任务和执行状态，调用检索模块为当前任务从 Query Graph 检索相关记忆，使用结合 alpha 乘以基于属性的加上一减 alpha 乘以基于 embedding 的分数的混合检索，返回 top-k 节点加上每个节点的一跳邻居按时间戳降序排序，检查临时存储的多模态内容，如果存在待识别的图片则从临时存储读取并附加到 prompt，使用 task 标签包装完整的 Insight Doc 内容、memory 标签包装检索到的相关 Query Graph 记忆（包括摘要、上下文和关键词）以及适合外部框架格式的多模态内容（如 base64 编码的图片）组装增强 prompt，然后传递给外部框架。
-
-**功能三：上下文拦截**：
-
-拦截工作流发生在每个执行循环结束时。步骤包括外部框架完成当前任务输出停止 token，Adapter 拦截任务执行上下文，并判断任务类型。如果是 Cross Validation 任务，直接传递给 Memory Integration Agent 进行冲突处理。如果是图片识别任务，从临时存储提取图片，移动到正式目录，与识别结果一起创建记忆节点，清理临时存储。如果是普通任务，传递给 Classification Agent 开始记忆更新工作流。
-
-**错误处理**：
-
-当智能体调用失败时，记录错误并重试一次。如果连续失败，将当前任务标记为失败并继续执行。任务终止时自动清理临时存储的多模态文件。
-
-**Deep Retrieval 工具**：
-
-该工具由外部框架调用，读取特定 Query Graph 记忆的完整 Interaction Tree 内容，包括所有条目文本和实际附件内容。工具在 ReAct 框架初始化期间声明，作为整个执行过程中可用的标准工具集的一部分。
-
-输入是 Query Graph 节点标识符。输出包括按时间戳排序的所有 Interaction Tree 条目完整信息，其中每个条目包含唯一条目标识符、完整文本内容、创建时间戳、包括来源和工具调用的元数据信息，以及附件列表，其中每个附件包含唯一标识符、指示图片、文档或代码类别的附件类型、文件路径内容，以及按类型处理的实际文件内容，图片返回 base64 编码，文档返回解析的文本或 base64，代码返回原始文本。
+当前实现采用最简单的`{node_id: full_text}`映射结构。`full_text`包含了生成该记忆节点时的完整上下文，可能包括：
+- ReAct Agent的思考过程
+- 工具调用及其返回结果
+- 最终回答或结论
 
 **使用场景**：
 
-外部框架发现 Query Graph 摘要不够详细需要查看原始推理过程。需要访问如图片和 PDF 等多模态附件的完整内容。需要理解详细的工具调用历史和执行过程。
+通常情况下，Query Graph的summary已经足够。但当需要查看更详细的信息时（比如想知道某个结论是如何推导出来的），可以通过Deep Retrieval工具访问Interaction Tree获取完整上下文。
 
-**设计理由**：
+**设计权衡**：
 
-一次返回所有信息简化调用工作流。条目文本已包含摘要，附件根据需要使用。外部框架自主决定是否使用附件内容。
+文档原本设计了复杂的父子节点结构和多模态附件支持，但当前实现为了简洁性采用了扁平结构。这意味着：
+- 不支持多模态内容（图片、PDF等）
+- 不区分推理过程、工具调用、回答等不同类型的内容
+- 所有信息都作为纯文本存储
 
-**调用格式**：
+## 核心工作流程
 
-使用 ReAct 标准的 tool call 和 tool response 标记。
+### 启动阶段
 
-**ReAct Agent**：
+用户通过命令行启动系统：
+```bash
+python main.py  # 启动交互模式
+python main.py --load memory.json  # 加载已有记忆后启动
+```
 
-该智能体是实现 Think-Act-Observe 循环和工具调用能力的多轮对话智能体。接收可能由 Adapter 增强的任务描述，执行推理和工具调用循环，返回最终答案或执行结果。
+系统支持三种输入模式：
 
-**核心工作流**：
+**模式1：纯问题**
+```
+> What is the capital of France?
+```
+直接回答问题。
 
-智能体维护包括系统 prompt、用户输入和助手响应的消息历史。在每次迭代中，调用 LLM 生成可能包含用于推理过程的 think 标签、用于工具调用的 tool call 标签或用于最终答案的 answer 标签的响应。如果检测到工具调用，智能体提取工具名称和参数，执行包括 search、visit 或 deep retrieval 的相应工具，将结果格式化为 tool response，并添加到消息历史。循环继续直到出现 answer 标签、达到最大迭代次数或超过 token 限制。
+**模式2：仅加载上下文**
+```
+> Context: [大段文本内容]
+```
+系统将上下文加载到记忆中，不回答问题。加载过程会：
+- 调用Classification Agent进行主题聚类
+- 调用Structure Agent生成摘要
+- 检索相似节点并判断关系（可能发现冲突）
+- 创建Query Graph节点和Interaction Tree条目
 
-**工具支持**：
+如果检测到冲突，系统会提示用户，但不会立即解决，等待用户提问时再处理。
 
-Search 工具使用需要有效 API 密钥的 Serper API 执行网络搜索。Visit 工具使用 Jina Reader API 获取和提取网页内容。Deep retrieval 工具读取 Query Graph 节点的完整 Interaction Tree 内容。
+**模式3：上下文+问题**
+```
+> Context: [大段文本内容]
+> Question: 基于上述内容，请回答...
+```
+先加载上下文到记忆，再回答问题。
 
-**上下文管理**：
+### 初始化流程
 
-智能体跟踪消息历史中的总 token 计数。当接近最大上下文 token 限制时，智能体请求立即最终答案。如果超过限制，智能体强制生成答案并终止。
+以模式3为例，系统的初始化流程如下：
 
-**终止条件**：
+**1. 解析用户输入**
+```python
+text_context, question, is_context_only = _parse_user_input_simple(user_input)
+```
+识别出上下文部分和问题部分。
 
-当助手响应包含 answer 标签时找到答案。在用尽允许的迭代次数后达到最大迭代次数。当上下文长度超过最大阈值时超过 token 限制。当 LLM 调用或工具执行严重失败时发生错误。
+**2. 加载上下文到记忆**
 
-## 数据流
+如果有text_context，系统会：
 
-### 初始化阶段
+a) **Classification Agent分类**
+- 输入：完整上下文文本
+- 判断是否需要聚类（如果内容涉及多个主题）
+- 如果上下文超长（超过32000 tokens），自动分块处理
+- 输出：多个cluster，每个包含`context`（主题描述）、`content`（原始文本）、`keywords`
 
-用户输入包含可能包括上下文、问题和如图片等多模态内容的 prompt。Adapter 拦截输入，捕获用户输入，如果用户上传图片或其他多模态内容，保存到临时目录并在内部维护临时存储映射，等待后续识别任务完成后再正式创建记忆节点。
+b) **逐个cluster处理**
 
-系统判断是否需要处理文本上下文。如果存在文本上下文，进行分类。如果不存在文本上下文仅有问题或图片，跳到规划。
+对每个cluster：
 
-Classification Agent 对上下文执行分类。如果过长，采用 90% 窗口容量的分块。生成聚类列表，其中每个聚类包括上下文和关键词。
+**Structure Agent** 生成结构化摘要：
+```python
+structure_output = structure_agent.run(StructureInput(
+    content=cluster.content,
+    context=cluster.context,
+    keywords=cluster.keywords
+))
+```
+输出：`summary`（结构化详细摘要）
 
-Structure Agent 为每个聚类生成摘要，产生结构化抽象。
+**硬编码模块** 组装完整节点：
+```python
+node = QueryGraphNode(
+    id=uuid.uuid4(),
+    summary=structure_output.summary,
+    context=cluster.context,
+    keywords=cluster.keywords,
+    embedding=embedding_module.compute_embedding(text),
+    timestamp=time.time(),
+    links=[]
+)
+query_graph.add_node(node)
+```
 
-硬编码处理通过生成节点标识符、复制上下文和关键词、生成时间戳、调用 Embedding 计算模块为摘要生成 embedding、组装包含标识符、摘要、上下文、关键词、embedding 和时间戳的完整节点并存储在内存中来组装完整节点并存储。
+**检索模块** 查找相似节点：
+```python
+candidates = retrieval_module.hybrid_retrieval(
+    query_embedding=node.embedding,
+    query_keywords=node.keywords,
+    graph=query_graph,
+    exclude_ids={node.id}
+)
+```
 
-硬编码检索调用检索模块基于新节点 embedding 检索 top-k 候选节点。
+**Analysis Agent** 判断关系：
+```python
+analysis_output = analysis_agent.run(AnalysisInput(
+    new_node=NodeInfo(...),
+    candidate_nodes=[NodeInfo(...) for c in candidates]
+))
+```
+输出：relationships列表，每个关系可能是：
+- `conflict`：内容矛盾，记录冲突信息
+- `related`：语义相关，创建related边
+- `unrelated`：无关，不做处理
 
-Memory Analysis Agent 分两个阶段判断关系。第一阶段优先判断冲突，输入为包括摘要、上下文和关键词的新节点加上类似结构的候选节点列表。批量判断确定新节点是否与候选节点有冲突关系。处理结果显示如果存在冲突，标记冲突关系并跳到规划，Planning Agent 将规划 Cross Validation 任务作为下一步。如果不存在冲突，进入第二阶段。
+如果发现conflict，系统会记录但不立即处理（在context-only模式下）。
 
-第二阶段通过批量判断新节点与候选节点的 related 关系来判断 related 关系。硬编码处理创建 related 边。
+**创建Interaction Tree条目**：
+```python
+interaction_tree.add_entry(node.id, cluster.content)
+```
+保存原始完整文本。
 
-硬编码处理创建 Interaction Tree，父节点存储完整的原始上下文文本，子节点如果存在则选择性地存储如图片和 PDF 的多模态内容。
+**3. 创建Insight Doc并规划**
 
-Planning Agent 分析任务，输入为任务目标加上包括摘要、上下文和关键词的新生成的 Query Graph 节点或冲突通知。如果 Adapter 有临时存储的多模态内容，Planning Agent 可以识别待处理的图片或其他内容。输出更新 Insight Doc，包括任务目标、已完成的子任务（如果有）和当前任务列表，决定下一步如规划图片识别任务。
+如果有question，系统会创建任务状态：
+```python
+insight_doc = InsightDoc(
+    doc_id=uuid.uuid4(),
+    task_goal=question,
+    completed_tasks=[],
+    current_task=""
+)
+```
 
-Adapter 通过读取 Insight Doc、通过硬编码逻辑调用检索模块为当前任务检索相关 Query Graph 记忆（使用混合检索返回 top-k 结果加上一跳邻居按时间戳降序排序）、检查临时存储的多模态内容如果存在则以适合外部框架的格式附加（如 base64 编码的图片）、使用 task 标签包装 Insight Doc 加上 memory 标签包装相关记忆加上多模态内容组装并传递给外部框架来增强 prompt。
+然后调用Planning Agent：
+```python
+planning_output = planning_agent.run(PlanningInput(
+    insight_doc=insight_doc
+))
+```
+
+Planning Agent会决定第一步要做什么，更新`current_task`。
+
+**4. Adapter增强Prompt**
+
+根据当前任务，Adapter会：
+- 从Query Graph中检索相关记忆（混合检索top-k + 一跳邻居）
+- 如果有待解决的冲突，准备冲突信息
+- 将任务描述、相关记忆、冲突信息等组合成增强的prompt
+- 传递给ReAct Agent执行
 
 ### 执行循环
 
-外部框架基于 Insight Doc 当前任务执行，参考提供的 Query Graph 记忆，必要时调用 Deep Retrieval 工具查看完整的 Interaction Tree 内容，完成任务输出停止 token。
+系统进入循环，每次迭代包含：
 
-Adapter 拦截上下文，捕获外部框架执行上下文。
+**1. ReAct Agent执行当前任务**
 
-任务类型判断分为三个路径。
+ReAct Agent是一个Think-Act-Observe循环：
+```
+[Think] 我需要搜索关于X的信息
+[Act] search("X的相关资料")
+[Observe] 找到了这些内容...
+[Think] 基于这些信息，我可以回答...
+[Answer] 最终答案是...
+```
 
-**路径一：冲突解决的 Cross Validation 任务**：
+可用工具：
+- `search`：使用Serper API进行网络搜索
+- `visit`：使用Jina Reader API访问网页并提取内容
+- `deep_retrieval`：从Interaction Tree读取某个记忆节点的完整原始上下文
 
-外部框架完成多源信息验证返回验证结果。直接传递给 Memory Integration Agent。Memory Integration Agent 基于冲突触发和验证结果生成整合的新节点。硬编码处理基于摘要、上下文和关键词计算新节点 embedding，去重继承所有冲突节点的边，更新所有邻居节点的上下文、关键词和 embedding，在 Interaction Tree 中记录合并操作，删除所有冲突节点及其边。新节点递归进入检索，排除已知邻居作为继承的边，判断与新候选节点的关系，如果存在更多冲突则递归处理直到只剩 related 关系。
+**2. Adapter拦截执行结果**
 
-**路径二：图片识别任务**：
+当ReAct Agent完成当前任务（输出`<answer>`标签或达到停止条件），Adapter会拦截完整的执行上下文（包括所有think、tool call、observe、answer等）。
 
-外部框架完成图片识别返回文本描述。Adapter 从临时存储提取图片信息，将图片从临时目录移动到正式存储目录，与识别结果一起创建完整的 Interaction Tree 节点，包括文本描述父节点和存储类型为图片、内容为正式文件路径的图片附件子节点。通过 Structure Agent、硬编码 embedding 计算、硬编码检索和 Memory Analysis Agent 过程执行分类。清理临时存储映射。更新 Query Graph 和 Interaction Tree。
+**3. 判断任务类型并更新记忆**
 
-**路径三：普通任务**：
+Adapter根据当前任务类型决定如何处理：
 
-通过 Structure Agent、硬编码 embedding 计算、硬编码检索、Memory Analysis Agent 两阶段处理和硬编码 Interaction Tree 创建执行分类。更新 Query Graph 和 Interaction Tree。
+**情况A：普通任务（NORMAL）**
 
-Planning Agent 通过将刚完成的任务添加到已完成子任务列表、基于新记忆决定下一个任务和更新当前任务字段来更新 Insight Doc。
+重复初始化时的流程：Classification → Structure → 检索 → Analysis → 建边 → 创建Interaction Tree条目。
 
-终止判断检查当前任务是否为空表示任务完成和系统终止。否则返回 Adapter prompt 增强进行下一轮。
+新生成的记忆节点会被传递给Planning Agent。
+
+**情况B：冲突验证任务（CROSS_VALIDATE）**
+
+如果当前任务是解决之前发现的冲突，Adapter会直接调用Integration Agent：
+```python
+integration_output = integration_agent.run(IntegrationInput(
+    nodes_to_merge=[...],  # 冲突的节点列表
+    verification_result=react_result  # ReAct的验证结果
+))
+```
+
+Integration Agent会：
+- 基于验证结果决定如何整合冲突节点
+- 生成新的`summary`、`context`、`keywords`
+- 提供`merge_description`说明合并过程
+
+硬编码模块会：
+- 创建新的合并节点
+- 删除旧的冲突节点
+- 继承所有冲突节点的边（去重）
+- 更新邻居节点的连接
+
+**防止无限合并**：系统有`MAX_MERGE_DEPTH`限制（默认3），防止递归合并深度过大。
+
+**4. Planning Agent更新计划**
+
+Planning Agent接收：
+- 当前的Insight Doc
+- 新生成的记忆节点信息
+- 可能的冲突通知
+
+Planning Agent会：
+- 将刚完成的任务添加到`completed_tasks`
+- 分析新的记忆和冲突情况
+- 决定下一步要做什么（更新`current_task`）
+- 如果任务完成，将`current_task`设为空字符串
+
+**5. 终止判断**
+
+如果`current_task`为空，系统终止。否则回到步骤1，Adapter重新增强prompt进行下一轮。
 
 ### 冲突处理机制
 
-此机制提高系统的可信度。
+这是系统的核心特性之一，用于处理矛盾信息。
 
-**触发条件**：
+**触发时机**：
 
-Memory Analysis Agent 在第一阶段判断期间检测到冲突关系。
+当Memory Analysis Agent在判断新节点与已有节点的关系时，如果发现内容矛盾，会标记为conflict关系。
 
-**处理工作流**：
+**处理流程**：
 
-通过记录冲突关系状态而不建立特殊边并临时将新节点添加到 Memory Bank 等待验证来标记冲突。
+1. **标记冲突**：记录冲突的节点ID和冲突描述，但暂时不做处理
 
-规划验证任务，Planning Agent 分析冲突记忆并规划 Cross Validation 任务作为下一步，任务类型为 Cross Validation，任务描述验证特定节点之间的冲突并解释冲突点，执行方法调用 search 或其他工具检索多源信息进行交叉验证。
+2. **通知Planning Agent**：将冲突信息传递给Planning Agent
 
-外部框架在下一循环迭代中执行验证，搜索权威来源，比较多个信息源，得出确定正确性或整合方法的验证结论。
+3. **规划验证任务**：Planning Agent会将下一个任务设为CROSS_VALIDATE类型，任务描述包含：
+   - 哪些节点存在冲突
+   - 冲突的内容是什么
+   - 需要验证什么
 
-解决冲突，Adapter 拦截验证结果，识别为 Cross Validation 任务，直接传递给 Memory Integration Agent，后者基于冲突触发和验证结果生成整合的新节点。硬编码处理删除冲突节点，创建新节点，继承边，更新邻居，生成新的整合节点继续正常工作流。
+4. **ReAct执行验证**：在下一个循环中，ReAct Agent会：
+   - 调用search工具搜索权威来源
+   - 可能访问多个网页进行交叉验证
+   - 得出验证结论
 
-**边界情况处理**：
+5. **Integration Agent整合**：基于验证结果，Integration Agent会：
+   - 分析哪些信息是准确的
+   - 综合多方信息生成新的摘要
+   - 生成合并后的节点
 
-当前版本不处理验证无法得出明确结论或两个节点都不正确的情况。这些情况将在未来版本中得到支持。
+6. **递归检测**：合并后的新节点会再次进入检索和关系判断流程，如果又发现新的冲突，会继续处理，直到达到`MAX_MERGE_DEPTH`限制。
+
+**示例场景**：
+
+假设记忆中已有节点A："埃菲尔铁塔高324米"。现在加载新上下文生成节点B："埃菲尔铁塔高330米"。
+
+1. Analysis Agent检测到冲突
+2. Planning Agent规划：验证埃菲尔铁塔的准确高度
+3. ReAct Agent搜索官方资料，发现：铁塔本体324米，加上天线总高330米
+4. Integration Agent整合："埃菲尔铁塔本体高324米，包含天线总高330米"
+
+## Agent详细设计
+
+### Classification Agent（分类智能体）
+
+**职责**：对长上下文进行主题分类或聚类。
+
+**输入**：
+- `context`：长上下文文本（可能超长）
+- `task_goal`：总任务目标（可选，用于辅助判断）
+- `current_task`：当前子任务（可选）
+
+**处理策略**：
+
+正常情况（不超长）：
+```
+输入：上下文文本
+↓
+LLM调用
+↓
+输出：是否需要聚类 + 聚类列表
+```
+
+超长情况（超过32000 tokens）：
+```
+输入：超长上下文
+↓
+按段落边界分块（每块约90%窗口大小）
+↓
+每块独立调用LLM
+↓
+合并所有块的聚类结果
+```
+
+**输出格式**（非JSON，使用特殊分隔符）：
+```
+SHOULD_CLUSTER: true
+
+=== CLUSTER c1 ===
+CONTEXT: 主题描述
+KEYWORDS: 关键词1, 关键词2, 关键词3
+CONTENT_START
+原始文本内容
+CONTENT_END
+
+=== CLUSTER c2 ===
+...
+```
+
+**LLM参数**：temperature=0.4, top_p=0.9（适中的创造性）
+
+### Structure Agent（结构化智能体）
+
+**职责**：将单个聚类内容压缩为结构化摘要。
+
+**输入**：
+- `content`：单个cluster的文本内容
+- `context`：cluster的主题描述
+- `keywords`：cluster的关键词
+
+**处理逻辑**：
+
+调用LLM进行压缩总结，要求：
+- 保留关键信息和证据
+- 保持逻辑清晰
+- 适度压缩（不要丢失重要细节）
+
+**输出**：
+- `summary`：结构化详细摘要
+
+**LLM参数**：temperature=0.1, top_p=0.8（低温度，确保输出精确可控）
+
+### Memory Analysis Agent（记忆分析智能体）
+
+**职责**：判断新节点与已有节点的关系。
+
+**输入**：
+- `new_node`：新生成的节点（包含summary, context, keywords，但不包含embedding）
+- `candidate_nodes`：检索模块返回的候选节点列表
+
+**判断策略**：
+
+系统采用优先级机制：conflict > related > unrelated
+
+LLM会逐个检查候选节点：
+1. 先判断是否conflict（内容矛盾）
+2. 如果不是conflict，判断是否related（语义相关）
+3. 如果都不是，标记为unrelated
+
+**输出**：
+```json
+{
+  "relationships": [
+    {
+      "existing_node_id": "uuid-xxx",
+      "relationship": "conflict",
+      "conflict_description": "关于X的描述存在矛盾",
+      "reasoning": "节点A说..., 节点B说..."
+    },
+    {
+      "existing_node_id": "uuid-yyy",
+      "relationship": "related",
+      "reasoning": "都讨论了Y主题"
+    }
+  ]
+}
+```
+
+**LLM参数**：temperature=0.4, top_p=0.9
+
+### Integration Agent（整合智能体）
+
+**职责**：合并冲突节点生成新节点。
+
+**输入**：
+- `nodes_to_merge`：需要合并的节点列表（通常是冲突的节点）
+- `nodes_neighbors`：每个节点的邻居信息
+- `verification_result`：ReAct Agent的验证结果（如果有）
+
+**处理逻辑**：
+
+基于预定义的合并策略：
+- 优先采纳更新的信息（基于timestamp）
+- 综合所有节点的优势
+- 使用验证结果作为权威
+
+**输出**：
+```json
+{
+  "merged_summary": "整合后的摘要",
+  "merged_context": "整合后的主题描述",
+  "merged_keywords": ["关键词1", "关键词2"],
+  "merge_description": "说明合并过程和理由"
+}
+```
+
+**后续硬编码处理**：
+- 生成新节点的embedding
+- 继承所有被合并节点的边（去重）
+- 删除旧节点
+- 更新Interaction Tree（添加合并事件记录）
+
+**LLM参数**：temperature=0.2, top_p=0.85（低温度，确保整合的一致性）
+
+### Planning Agent（规划智能体）
+
+**职责**：分析当前状态，决定下一步行动。
+
+**输入**：
+- `insight_doc`：当前任务状态
+- `new_memory_nodes`：新生成的记忆节点（如果有）
+- `conflict_notification`：冲突通知（如果有）
+
+**规划策略**：
+
+**增量式规划**：只决定下一步，不预先规划所有步骤。
+
+**决策逻辑**：
+1. 如果有未解决的冲突 → 规划CROSS_VALIDATE任务
+2. 如果任务目标未达成 → 规划NORMAL任务继续推进
+3. 如果任务完成 → 将`current_task`设为空字符串
+
+**输出**：
+```json
+{
+  "task_goal": "原始任务目标",
+  "completed_tasks": [
+    {
+      "type": "NORMAL",
+      "description": "已完成的任务描述",
+      "status": "success",
+      "context": "浓缩总结"
+    }
+  ],
+  "current_task": "下一步要做的任务"
+}
+```
+
+**终止判断**：
+
+当`current_task`为空字符串时，系统认为任务完成，停止执行。
+
+**LLM参数**：temperature=0.6, top_p=0.95（较高温度，允许灵活规划）
+
+### ReAct Agent（推理-行动智能体）
+
+**职责**：执行具体任务，支持工具调用和多轮推理。
+
+**核心循环**：Think → Act → Observe → 重复，直到得出Answer。
+
+**可用工具**：
+
+1. **search(query)**：网络搜索
+   - 使用Serper API
+   - 返回搜索结果的标题、链接、摘要
+
+2. **visit(url)**：访问网页
+   - 使用Jina Reader API
+   - 返回网页的清洁文本内容
+
+3. **deep_retrieval(node_id)**：深度检索
+   - 从Interaction Tree读取指定节点的完整原始上下文
+   - 用于需要回溯详细信息的场景
+
+**标签格式**：
+```xml
+<think>我需要先搜索相关信息</think>
+<tool_call>{"tool_name": "search", "arguments": {"query": "..."}}</tool_call>
+<!-- 系统返回 -->
+<tool_response>搜索结果...</tool_response>
+<think>基于搜索结果，我可以得出结论</think>
+<answer>最终答案</answer>
+```
+
+**上下文管理**：
+
+ReAct Agent维护完整的消息历史，持续追踪token数量。当接近`MAX_CONTEXT_TOKENS`限制时，会提示LLM尽快给出答案。
+
+**终止条件**：
+- 出现`<answer>`标签
+- 达到`MAX_LLM_CALL_PER_RUN`限制
+- 超过`MAX_CONTEXT_TOKENS`限制
+- 发生严重错误
+
+**LLM参数**：temperature=0.6, top_p=0.95
+
+## 接口层设计
+
+### MemoryBankAdapter
+
+这是Memory Bank与ReAct Agent之间的桥梁，负责：
+
+**1. Prompt增强**
+
+在每轮执行前，Adapter会：
+```python
+def enhance_prompt(insight_doc):
+    # 1. 读取当前任务
+    current_task = insight_doc.current_task
+
+    # 2. 检索相关记忆
+    relevant_memories = retrieval_module.hybrid_retrieval(
+        query_text=current_task,
+        k=5
+    )
+
+    # 3. 检查是否有待解决的冲突
+    pending_conflicts = self._get_pending_conflicts()
+
+    # 4. 组装增强prompt
+    prompt = f"""
+<task>
+Task Goal: {insight_doc.task_goal}
+Current Subtask: {current_task}
+Completed Tasks: {format_completed_tasks(insight_doc.completed_tasks)}
+</task>
+
+<memory>
+Relevant memories:
+{format_memories(relevant_memories)}
+</memory>
+
+{format_conflicts(pending_conflicts) if pending_conflicts else ""}
+
+Please execute the current subtask.
+"""
+    return prompt
+```
+
+**2. 上下文拦截**
+
+在每轮执行后，Adapter会：
+```python
+def intercept_context(full_context, task_type, insight_doc):
+    if task_type == "CROSS_VALIDATE":
+        # 冲突验证任务 → Integration Agent
+        self._handle_conflict_resolution(full_context)
+    else:
+        # 普通任务 → 正常记忆更新流程
+        self._handle_normal_task(full_context)
+```
+
+**3. 冲突管理**
+
+Adapter维护一个内部的冲突队列：
+```python
+self._pending_conflicts = []  # 待解决的冲突列表
+```
+
+当Analysis Agent检测到冲突时，会加入这个队列。当Planning Agent规划验证任务后，冲突会被标记为"处理中"。验证完成后，从队列中移除。
+
+### Deep Retrieval Tool
+
+供ReAct Agent调用的工具，用于访问Interaction Tree的完整内容。
+
+**实现**：
+```python
+class DeepRetrievalTool:
+    def __call__(self, node_id: str) -> str:
+        # 从Interaction Tree读取完整文本
+        full_text = self.interaction_tree.get_entry(node_id)
+
+        if not full_text:
+            return f"Node {node_id} not found in Interaction Tree"
+
+        # 返回格式化的完整内容
+        return f"""
+=== Deep Retrieval Result ===
+Node ID: {node_id}
+Full Context:
+{full_text}
+===========================
+"""
+```
+
+**使用场景示例**：
+
+```xml
+<think>Memory中提到"X理论的核心思想"，但摘要不够详细，我需要查看完整内容</think>
+<tool_call>{"tool_name": "deep_retrieval", "arguments": {"node_id": "uuid-xxx"}}</tool_call>
+```
+
+## 硬编码模块
+
+这些模块不涉及LLM调用，通过程序逻辑实现。
+
+### Embedding Module
+
+**职责**：为文本生成语义向量。
+
+**实现**：使用sentence-transformers库
+```python
+from sentence_transformers import SentenceTransformer
+
+class EmbeddingModule:
+    def __init__(self, model_name="all-MiniLM-L6-v2"):
+        self.model = SentenceTransformer(model_name)
+
+    def compute_embedding(self, text: str) -> np.ndarray:
+        return self.model.encode(text)
+```
+
+**使用场景**：
+- 创建新节点时，为`summary + context + keywords`生成embedding
+- 检索时，为query生成embedding进行相似度计算
+
+### Retrieval Module
+
+**职责**：基于embedding和关键词检索相似节点。
+
+**核心方法**：
+```python
+def hybrid_retrieval(
+    query_embedding: np.ndarray,
+    query_keywords: List[str],
+    graph: QueryGraph,
+    k: int = 5,
+    alpha: float = 0.5,
+    exclude_ids: Set[str] = None
+) -> List[QueryGraphNode]:
+    # 1. BM25关键词检索
+    keyword_scores = self._bm25_search(query_keywords)
+
+    # 2. 语义相似度检索
+    semantic_scores = self._cosine_similarity(query_embedding)
+
+    # 3. 混合分数
+    final_scores = alpha * keyword_scores + (1-alpha) * semantic_scores
+
+    # 4. 选出top-k
+    candidates = select_topk(final_scores, k, exclude_ids)
+
+    # 5. 为每个候选节点附加一跳邻居
+    results_with_neighbors = []
+    for node in candidates:
+        results_with_neighbors.append(node)
+        results_with_neighbors.extend(graph.get_neighbors(node.id))
+
+    # 6. 去重并按时间戳排序
+    unique_results = remove_duplicates(results_with_neighbors)
+    sorted_results = sort_by_timestamp(unique_results, descending=True)
+
+    return sorted_results
+```
+
+**索引管理**：
+
+系统维护BM25索引用于关键词检索。当图结构发生变化（添加/删除/更新节点）时，索引被标记为"脏"。下次检索时会自动重建索引。
+
+### Graph Operations Module
+
+**职责**：管理Query Graph的节点和边操作。
+
+**核心方法**：
+```python
+class GraphOperations:
+    def __init__(self, query_graph, interaction_tree):
+        self.query_graph = query_graph
+        self.interaction_tree = interaction_tree
+
+    def add_node(self, node):
+        """添加节点到图"""
+        self.query_graph.add_node(node)
+
+    def add_edge(self, node_id1, node_id2):
+        """创建related边"""
+        self.query_graph.add_edge(node_id1, node_id2)
+
+    def merge_nodes(self, node_ids, merged_node):
+        """合并多个节点"""
+        # 1. 收集所有被合并节点的邻居
+        all_neighbors = set()
+        for nid in node_ids:
+            neighbors = self.query_graph.get_neighbors(nid)
+            all_neighbors.update(n.id for n in neighbors)
+
+        # 2. 添加新节点
+        self.query_graph.add_node(merged_node)
+
+        # 3. 继承所有边（去重）
+        for neighbor_id in all_neighbors:
+            if neighbor_id not in node_ids:  # 排除被合并的节点
+                self.query_graph.add_edge(merged_node.id, neighbor_id)
+
+        # 4. 删除旧节点
+        for nid in node_ids:
+            self.query_graph.delete_node(nid)
+            # Interaction Tree条目保留，重新附加到新节点
+```
+
+**实现细节**：
+
+Query Graph使用自定义邻接表实现（不依赖NetworkX）：
+```python
+class QueryGraph:
+    def __init__(self):
+        self.nodes_dict = {}  # {node_id: QueryGraphNode}
+
+    # 每个节点的links列表存储邻居ID
+    # 边是无向的，所以需要双向维护
+```
 
 ## 系统特性
 
-### 增量式规划理念
+### 可配置的LLM参数
 
-系统采用单步规划模式，Planning Agent 仅决定下一步而非全面计划。这提供对执行结果的动态适应、无需优先级队列的降低复杂性和即时冲突响应。当前任务字段通常包含零个或一个任务。
+每个Agent可以独立配置temperature和top_p，针对不同任务优化：
 
-### 可信度的冲突解决
-
-当检测到矛盾信息时，系统不立即接受或忽略，而是触发 Cross Validation 工作流，外部框架搜索权威来源进行验证。Memory Integration Agent 综合验证结果生成整合节点，确保记忆可靠性。
-
-### 多模态支持
-
-系统通过临时存储机制支持用户上传的图片和其他多模态内容。Adapter 将多模态内容保存到临时目录，等待外部框架完成识别，然后与识别结果和实际内容一起正式创建记忆节点。这种设计确保数据完整性并遵循正常的记忆创建工作流。
+| Agent | Temperature | Top-P | 说明 |
+|-------|-------------|-------|------|
+| Classification | 0.4 | 0.9 | 需要一定创造性来识别主题 |
+| Structure | 0.1 | 0.8 | 需要精确的压缩和结构化 |
+| Analysis | 0.4 | 0.9 | 需要准确判断关系 |
+| Integration | 0.2 | 0.85 | 需要稳定一致的整合 |
+| Planning | 0.6 | 0.95 | 需要灵活的规划能力 |
+| ReAct | 0.6 | 0.95 | 需要创造性推理 |
 
 ### 混合检索策略
 
-系统结合基于属性的关键词匹配和基于 embedding 的语义相似度。可配置的 alpha 参数平衡两种检索方法，适应不同场景需求。检索结果不仅包括 top-k 候选节点，还包括一跳邻居，提供更丰富的上下文信息。
+系统结合关键词和语义两种检索方式：
 
-### 记忆持久化和清理
+**关键词检索**：适合精确匹配场景
+- 用户问："埃菲尔铁塔的高度"
+- 关键词["埃菲尔铁塔", "高度"]精确匹配相关节点
 
-所有记忆在任务执行期间存储在内存中。系统提供可选的 JSON 导出功能用于持久化。任务完成后，所有记忆自动清理，确保下一个任务的干净状态。
+**语义检索**：适合概念相似场景
+- 用户问："巴黎的标志性建筑"
+- 虽然没有直接提到"埃菲尔铁塔"，但语义相近
 
-### 灵活的 LLM 配置
+**混合检索**：平衡两者
+- `α=0.5`：均衡权重
+- `α=0.7`：偏向关键词（精确性）
+- `α=0.3`：偏向语义（召回率）
 
-系统支持多个 LLM 提供商，包括 DeepSeek、OpenAI 和本地模型。每个智能体可以独立配置 temperature 和 top-p 参数，针对不同任务特征进行优化。Classification 和 Analysis Agent 使用约 0.4 的适中温度以平衡创造性和准确性。Structure 和 Integration Agent 使用约 0.1 到 0.2 的低温度以获得精确的确定性输出。Planning 和 ReAct Agent 使用约 0.6 的较高温度以进行灵活的创造性规划。
+### 邻居扩展机制
 
-### 可扩展架构
+检索不仅返回top-k候选节点，还包括每个候选节点的一跳邻居。这提供了更丰富的上下文：
 
-系统设计为可以集成到不同外部智能体框架的记忆管理范式。核心记忆管理逻辑独立于特定执行框架。外部框架通过 Adapter 接口交互。模块化设计允许独立替换或升级单个组件。
+```
+假设检索到节点A："Python是一种编程语言"
+节点A的邻居：
+- 节点B："Python适合数据科学"
+- 节点C："Python有丰富的库生态"
+
+返回结果：[A, B, C]
+```
+
+这种设计让LLM能看到更完整的知识图谱局部结构。
+
+### 记忆的持久化与清理
+
+**持久化**：
+```python
+memory_bank.export_memory("task_memory.json")
+```
+将当前的InsightDoc、QueryGraph、InteractionTree全部导出为JSON。
+
+**加载**：
+```python
+memory_bank.load_memory("task_memory.json")
+```
+从JSON恢复完整的记忆状态。
+
+**自动清理**：
+每次任务完成后（用户输入quit），系统会调用`clear_memory()`清空所有记忆，确保下次任务从干净状态开始。
+
+### 错误处理机制
+
+**Agent调用失败**：
+- 记录错误日志
+- 重试一次
+- 如果仍失败，标记当前任务为failure，继续执行下一个任务
+
+**工具调用失败**：
+- 记录错误信息
+- 返回错误消息给ReAct Agent
+- 由Agent决定如何继续（可能换一个工具或策略）
+
+**安全上限**：
+- `MAX_LLM_CALL_PER_RUN`：防止无限循环（默认60次）
+- `MAX_CONTEXT_TOKENS`：防止上下文溢出（默认128000）
+- `MAX_MERGE_DEPTH`：防止递归合并过深（默认3）
 
 ## 配置参数
 
-所有系统参数都可以通过环境变量配置。
+所有参数通过`.env`文件配置：
 
-**LLM 提供商配置**：在 DeepSeek、OpenAI 或本地模型之间选择，分别具有各自的 API 密钥、base URL 和模型名称。通用 LLM 参数包括默认为 0.6 的 temperature、默认为 4096 的最大 token 数和默认为 0.95 的 top-p。
+```bash
+# LLM提供商选择
+LLM_PROVIDER=deepseek  # 可选：deepseek, openai, local
 
-**Embedding 配置**：指定默认为 all-MiniLM-L6-v2 的 embedding 模型。
+# DeepSeek配置
+DEEPSEEK_API_KEY=your-key-here
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-chat
 
-**检索配置**：设置默认为 5 的 top-k 值和默认为 0.5 的 alpha 混合权重。
+# OpenAI配置
+OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4
 
-**外部 API 配置**：提供用于网络搜索的 Serper API 密钥和用于网页内容提取的 Jina API 密钥。
+# 本地模型配置
+LOCAL_BASE_URL=http://127.0.0.1:6001/v1
+LOCAL_MODEL=default
 
-**ReAct 配置**：定义默认为 60 的每次运行最大 LLM 调用次数和默认为 128000 的最大上下文 token 数。
+# LLM通用参数
+LLM_TEMPERATURE=0.6
+LLM_MAX_TOKENS=4096
+LLM_TOP_P=0.95
 
-**存储路径配置**：指定用于多模态临时存储的临时目录和用于正式多模态内容存储的存储目录。
+# Embedding配置
+EMBEDDING_MODEL=all-MiniLM-L6-v2
 
-**Agent 窗口配置**：为每个智能体设置上下文窗口大小，包括 Classification、Structure、Analysis、Integration 和 Planning Agent，都默认为 32000 个 token。
+# 检索配置
+RETRIEVAL_K=5  # top-k候选节点数
+RETRIEVAL_ALPHA=0.5  # 混合检索权重（0-1）
 
-**Agent LLM 参数配置**：为每个智能体单独配置 temperature 和 top-p。Classification Agent 使用 0.4 温度和 0.9 top-p。Structure Agent 使用 0.1 温度和 0.8 top-p。Analysis Agent 使用 0.4 温度和 0.9 top-p。Integration Agent 使用 0.2 温度和 0.85 top-p。Planning Agent 使用 0.6 温度和 0.95 top-p。ReAct Agent 使用 0.6 温度和 0.95 top-p。
+# 合并配置
+MAX_MERGE_DEPTH=3  # 最大递归合并深度
+REPORT_CONFLICTS_IN_CONTEXT_LOADING=True  # 是否在context-only模式报告冲突
 
-**长文本处理配置**：设置用于拆分过长上下文的块比率，默认为 0.9 留 10% 余量。
+# API配置
+SERPER_API_KEY=your-serper-key  # 网络搜索API
+JINA_API_KEY=your-jina-key  # 网页内容提取API
 
-## 技术实现细节
+# ReAct配置
+MAX_LLM_CALL_PER_RUN=60  # 单次任务最大LLM调用次数
+MAX_CONTEXT_TOKENS=128000  # 最大上下文token数
 
-### 图结构实现
+# 存储路径
+TEMP_DIR=data/temp  # 临时目录（当前未使用）
+STORAGE_DIR=data/storage  # 存储目录（当前未使用）
 
-Query Graph 使用自定义邻接表实现而非 NetworkX。节点存储在将标识符映射到节点对象的字典中。每个节点维护邻居标识符列表。这种轻量级实现为系统需求提供足够的功能，同时保持简单性和控制。
+# Agent窗口大小（tokens）
+CLASSIFICATION_AGENT_WINDOW=32000
+STRUCTURE_AGENT_WINDOW=32000
+ANALYSIS_AGENT_WINDOW=32000
+INTEGRATION_AGENT_WINDOW=32000
+PLANNING_AGENT_WINDOW=32000
 
-### 检索索引管理
+# Agent LLM参数
+CLASSIFICATION_AGENT_TEMPERATURE=0.4
+CLASSIFICATION_AGENT_TOP_P=0.9
 
-检索模块维护用于基于关键词检索的 BM25 索引。索引在包括添加节点、删除节点或更新节点属性的图修改后被标记为脏。脏索引在下次检索操作期间自动重建。这种惰性重建策略避免不必要的重新计算，提高整体效率。
+STRUCTURE_AGENT_TEMPERATURE=0.1
+STRUCTURE_AGENT_TOP_P=0.8
 
-### Token 计数和上下文管理
+ANALYSIS_AGENT_TEMPERATURE=0.4
+ANALYSIS_AGENT_TOP_P=0.9
 
-ReAct Agent 持续监控消息历史 token 计数。当接近最大上下文 token 限制时，智能体请求立即最终答案。这种主动管理防止对话中途截断，确保顺利执行。
+INTEGRATION_AGENT_TEMPERATURE=0.2
+INTEGRATION_AGENT_TOP_P=0.85
 
-### 错误处理和重试逻辑
+PLANNING_AGENT_TEMPERATURE=0.6
+PLANNING_AGENT_TOP_P=0.95
 
-智能体调用失败触发错误记录和单次重试尝试。连续失败将当前任务标记为失败允许执行继续。这种弹性设计防止单个组件失败导致整个系统崩溃。
+REACT_AGENT_TEMPERATURE=0.6
+REACT_AGENT_TOP_P=0.95
 
-### Interaction Tree 合并处理
+VISIT_EXTRACTION_TEMPERATURE=0.2  # Visit工具内部LLM提取参数
+VISIT_EXTRACTION_TOP_P=0.85
 
-当 Query Graph 节点合并时，原始节点的 Interaction Tree 重新附加到新合并的节点。系统添加只读的合并事件元数据条目，记录哪些节点何时合并并附带描述。这种设计保留完整的历史信息，实现完整的上下文追溯，而不复制或修改原始条目。
+# 长文本处理
+CHUNK_RATIO=0.9  # 分块时使用窗口的90%，留10%余量
+
+# 日志
+LOG_LEVEL=INFO
+```
+
+## 当前实现的限制与未来方向
+
+### 已实现的核心功能
+
+✅ 三层存储架构（InsightDoc、QueryGraph、InteractionTree）
+✅ 完整的记忆更新流程（分类、结构化、检索、关系判断、建边）
+✅ 冲突检测与解决机制
+✅ 增量式规划策略
+✅ 混合检索（关键词+语义+邻居扩展）
+✅ ReAct Agent（支持search、visit、deep_retrieval工具）
+✅ 记忆持久化（JSON导出/导入）
+✅ Context-only模式（仅加载上下文）
+✅ 多LLM提供商支持（DeepSeek、OpenAI、Local）
+
+### 当前限制
+
+❌ **不支持多模态内容**：原始设计包含图片、PDF等附件支持，但当前实现为纯文本系统
+❌ **Interaction Tree结构简化**：采用扁平的{node_id: text}映射，不区分父子节点和附件
+❌ **临时存储机制未实现**：TEMP_DIR和STORAGE_DIR配置项存在但未使用
+❌ **合并事件记录不完整**：当节点合并时，Interaction Tree应该记录合并事件，但当前实现中缺失这部分逻辑
+
+### 未来优化方向
+
+**1. 多模态支持**
+- 实现临时存储机制处理用户上传
+- 支持图片识别任务
+- 完善Interaction Tree的附件管理
+
+**2. 更智能的Planning**
+- 可以尝试使用强化学习或监督微调优化Planning Agent
+- 更好地权衡任务的优先级
+
+**3. 向量数据库集成**
+- 当前embedding存储在内存中，可以扩展到Faiss或Chroma
+- 支持更大规模的记忆管理
+
+**4. 冲突解决策略优化**
+- 处理验证无法得出结论的情况
+- 处理多个节点都不正确的情况
+- 更细粒度的冲突描述和定位
+
+**5. 跨任务记忆复用**
+- 当前每次任务完成后清空记忆
+- 可以探索选择性保留有价值的记忆到下一个任务
+
+## 技术实现要点
+
+### 图结构的轻量级实现
+
+使用纯Python字典和列表实现邻接表，而非依赖NetworkX：
+
+```python
+class QueryGraph:
+    def __init__(self):
+        self.nodes_dict = {}  # {id: QueryGraphNode}
+
+    # 每个节点的links列表维护邻居关系
+    # 无向边需要双向维护
+```
+
+**优势**：
+- 简单轻量，无额外依赖
+- 对于本系统的需求足够
+- 便于序列化和持久化
+
+### 检索索引的懒加载
+
+BM25索引采用"脏标记+懒重建"策略：
+
+```python
+class RetrievalModule:
+    def __init__(self):
+        self._index_dirty = True
+        self._bm25_index = None
+
+    def mark_index_dirty(self):
+        self._index_dirty = True
+
+    def hybrid_retrieval(self, ...):
+        if self._index_dirty:
+            self._rebuild_index()
+        # 进行检索...
+```
+
+**优势**：
+- 避免每次修改图都重建索引
+- 只在需要时重建
+- 提升整体效率
+
+### ReAct Agent的上下文管理
+
+持续追踪消息历史的token数：
+
+```python
+class MultiTurnReactAgent:
+    def run(self, prompt):
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        token_count = count_tokens(SYSTEM_PROMPT)
+
+        for iteration in range(MAX_ITERATIONS):
+            # 检查是否接近上限
+            if token_count > MAX_CONTEXT_TOKENS * 0.9:
+                # 提示LLM尽快给出答案
+                messages.append({
+                    "role": "user",
+                    "content": "Context is nearly full. Please provide final answer now."
+                })
+
+            # 调用LLM...
+```
+
+### JSON解析的鲁棒性
+
+Agent的LLM响应可能格式不完美，需要鲁棒的解析：
+
+```python
+def _parse_json_response(self, response):
+    # 1. 尝试直接解析
+    try:
+        return json.loads(response)
+    except:
+        pass
+
+    # 2. 尝试提取```json代码块
+    if "```json" in response:
+        try:
+            json_part = extract_code_block(response)
+            json_part = fix_json_string(json_part)  # 修复常见错误
+            return json.loads(json_part)
+        except:
+            pass
+
+    # 3. 尝试查找JSON对象
+    start = response.find('{')
+    end = response.rfind('}') + 1
+    if start != -1 and end > start:
+        try:
+            json_str = response[start:end]
+            json_str = fix_json_string(json_str)
+            return json.loads(json_str)
+        except:
+            pass
+
+    # 4. 失败
+    raise ValueError("Cannot parse JSON response")
+
+def fix_json_string(json_str):
+    # 补全缺失的括号
+    # 移除末尾多余的逗号
+    # 等等...
+```
+
+## 使用示例
+
+### 示例1：长文档理解
+
+```bash
+> Context: [粘贴一份50页的研究报告]
+✅ Context loaded successfully. You can now ask questions.
+
+> 这份报告的核心论点是什么？
+[系统从记忆中检索相关部分，ReAct Agent分析并回答]
+
+> 第3章和第7章的结论是否一致？
+[系统检索第3章和第7章的记忆，如果发现矛盾，触发冲突验证]
+```
+
+### 示例2：多源信息验证
+
+```bash
+> 埃菲尔铁塔的高度是多少？
+[ReAct搜索并找到：324米]
+
+> Context: 根据最新资料，埃菲尔铁塔高330米
+[系统检测到冲突，Planning Agent规划验证任务]
+[ReAct搜索权威来源进行验证]
+[Integration Agent整合：本体324米，包含天线330米]
+
+> 埃菲尔铁塔的高度是多少？
+[返回整合后的准确信息]
+```
+
+### 示例3：复杂多步研究
+
+```bash
+> 调查Python在数据科学领域的应用情况
+[Planning: 第1步 - 了解Python在数据科学的优势]
+[ReAct: 搜索相关资料，工具调用多次]
+[记忆更新：创建节点"Python数据科学优势"]
+
+[Planning: 第2步 - 找到主流的数据科学库]
+[ReAct: 搜索NumPy、Pandas、Scikit-learn等]
+[记忆更新：创建节点"Python数据科学库"]
+
+[Planning: 第3步 - 总结应用场景]
+[ReAct: 综合之前的记忆生成总结]
+[任务完成]
+```
+
+### 示例4：记忆持久化
+
+```bash
+> Context: [大量上下文]
+> [问一些问题]
+> export my_research.json
+💾 Exported to: my_research.json
+> quit
+
+# 下次启动
+> python main.py --load my_research.json
+📥 Loaded memory from: my_research.json
+> [继续之前的话题]
+```
+
+## 总结
+
+Agentic Memory Bank是一个专注于单次任务的长上下文管理系统。通过三层存储架构、多个专业化Agent和增量式规划策略，系统能够有效处理超长文本、复杂推理任务和矛盾信息。冲突检测与解决机制确保了记忆的可信度，混合检索策略提供了灵活高效的信息获取能力。
+
+当前实现聚焦于核心功能，采用纯文本存储和轻量级图结构，为基础的长上下文任务提供可靠支持。未来可以在多模态支持、更智能的规划和跨任务记忆复用等方向进一步发展。

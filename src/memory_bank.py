@@ -279,22 +279,18 @@ class MemoryBank:
             task_goal="Context loading"  # Virtual task goal
         ))
 
-        # 2-3. Process each cluster (same as normal workflow, but no planning)
         new_nodes = []
-        all_conflicts = []  # Collect all conflicts
 
         for i, cluster in enumerate(classification_output.clusters):
 
-            # 4. Structuring
             print(f"\n  [{i+1}/{len(classification_output.clusters)}] Calling Structure Agent...")
             structure_output = self.structure_agent.run(StructureInput(
                 content=cluster.content,
                 context=cluster.context,
                 keywords=cluster.keywords,
-                current_task="Context loading"  # Virtual current task
+                current_task="Context loading"
             ))
 
-            # 5. Assemble node and add to graph
             node = self._create_node(
                 summary=structure_output.summary,
                 context=cluster.context,
@@ -303,10 +299,8 @@ class MemoryBank:
             self.graph_ops.add_node(node)
             new_nodes.append(node)
 
-            # 6. Mark index as dirty (rebuild on next retrieval)
             self.retrieval_module.mark_index_dirty()
 
-            # 7. Retrieve similar nodes (for analyzing potential conflicts)
             candidates = self.retrieval_module.hybrid_retrieval(
                 query_embedding=node.embedding,
                 query_keywords=node.keywords,
@@ -314,7 +308,6 @@ class MemoryBank:
                 exclude_ids={node.id}
             )
 
-            # 8. Analyze relationships (if candidate nodes found)
             if candidates:
                 from src.agents.analysis_agent import AnalysisInput, NodeInfo
                 analysis_input = AnalysisInput(
@@ -338,54 +331,23 @@ class MemoryBank:
                 )
                 analysis_output = self.analysis_agent.run(analysis_input)
 
-                # Process relationships (record conflict info, add related edges)
                 for rel in analysis_output.relationships:
-                    if rel.relationship == "conflict":
-                        # Record conflict info (if config enables conflict reporting)
-                        if self.config.REPORT_CONFLICTS_IN_CONTEXT_LOADING:
-                            all_conflicts.append({
-                                "new_node_id": node.id,
-                                "existing_node_id": rel.existing_node_id,
-                                "description": rel.conflict_description,
-                                "new_context": node.context,
-                                "existing_context": self.query_graph.get_node(rel.existing_node_id).context
-                            })
-                    elif rel.relationship == "related":
+                    if rel.relationship == "related":
                         self.graph_ops.add_edge(node.id, rel.existing_node_id)
 
-            # 9. Create Interaction Tree Entry (save complete content)
             self.interaction_tree.add_entry(node.id, cluster.content)
 
-        # Statistics
         stats = {
             "nodes_added": len(new_nodes),
             "total_nodes": self.query_graph.get_node_count(),
-            "total_edges": self.query_graph.get_edge_count(),
-            "conflicts_detected": len(all_conflicts)
+            "total_edges": self.query_graph.get_edge_count()
         }
 
-        logger.info(f"Context loaded successfully: {len(new_nodes)} nodes added, {len(all_conflicts)} conflicts detected")
-
-        # Generate return message
-        base_message = f"Context loaded successfully. Added {len(new_nodes)} nodes to memory."
-
-        # If conflicts detected, add conflict report
-        if all_conflicts and self.config.REPORT_CONFLICTS_IN_CONTEXT_LOADING:
-            conflict_report = f"\n\nDetected {len(all_conflicts)} potential conflict(s):\n"
-            for i, conflict in enumerate(all_conflicts[:3], 1):  # Show first 3 conflicts at most
-                conflict_report += f"\n{i}. {conflict['description']}"
-                conflict_report += f"\n   New: {conflict['new_context']}"
-                conflict_report += f"\n   Existing: {conflict['existing_context']}\n"
-
-            if len(all_conflicts) > 3:
-                conflict_report += f"\n... and {len(all_conflicts) - 3} more conflict(s)."
-
-            base_message += conflict_report
+        logger.info(f"Context loaded successfully: {len(new_nodes)} nodes added")
 
         return {
-            "answer": base_message,
-            "stats": stats,
-            "conflicts": all_conflicts  # For main.py use
+            "answer": f"Context loaded successfully. Added {len(new_nodes)} nodes to memory.",
+            "stats": stats
         }
 
     def _initialize(self, user_input: str) -> str:
@@ -463,12 +425,11 @@ class MemoryBank:
 
     def _parse_user_input_simple(self, user_input: str) -> Tuple[str, str, bool]:
         """
-        Simplified input parsing - provides clearer user experience
+        Simplified input parsing
 
-        Supports three modes:
-        1. Pure question - directly input question
-        2. Starting with "Context:" - context loading only
-        3. Contains "Question:" - context + question mode
+        Supports two modes:
+        1. Context loading only - starts with "Context:" or "上下文："
+        2. Direct question - any other input
 
         Args:
             user_input: User input
@@ -478,40 +439,15 @@ class MemoryBank:
         """
         user_input = user_input.strip()
 
-        # Mode 1: Context only
+        # Context only mode
         if user_input.lower().startswith("context:") or user_input.startswith("上下文："):
-            # Remove prefix, get context content
             if user_input.lower().startswith("context:"):
                 text_context = user_input[8:].strip()
             else:
                 text_context = user_input[4:].strip()
             return text_context, "", True
 
-        # Mode 2: Context + question (check if contains Question marker)
-        if "question:" in user_input.lower() or "问题：" in user_input:
-            # Parse context and question
-            text_context = ""
-            question = ""
-
-            # Try to separate context and question
-            if "\nquestion:" in user_input.lower():
-                parts = user_input.split("\nquestion:", 1)
-                text_context = parts[0].strip()
-                question = parts[1].strip()
-            elif "\n问题：" in user_input:
-                parts = user_input.split("\n问题：", 1)
-                text_context = parts[0].strip()
-                question = parts[1].strip()
-
-            # Clean context prefix
-            if text_context.lower().startswith("context:"):
-                text_context = text_context[8:].strip()
-            elif text_context.startswith("上下文："):
-                text_context = text_context[4:].strip()
-
-            return text_context, question, False
-
-        # Mode 3: Pure question (no markers)
+        # Direct question mode
         return "", user_input, False
 
 

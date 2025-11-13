@@ -123,13 +123,12 @@ def setup_display_hook() -> None:
 def run_interactive(memory_bank: MemoryBank) -> None:
     """
     Interactive query mode with context loading and memory management.
-    Supports direct questions, context-only mode, and context + question mode.
+    Supports two modes: direct questions and context-only loading.
     """
     print("\n🚀 Agentic Memory Bank - Interactive Mode")
     print("\n📖 Input Modes:")
-    print("  - Direct question: Just type your question")
-    print("  - Load context: Start with 'Context:' or '上下文：'")
-    print("  - Context + Question: Use 'Context: ... \\nQuestion: ...'")
+    print("  1. Direct question: Just type your question")
+    print("  2. Load context: Start with 'Context:' or '上下文：'")
     print("\n⚙️  Commands:")
     print("  - 'export <file>': Save memory to file")
     print("  - 'load <file>': Load memory from file")
@@ -137,13 +136,10 @@ def run_interactive(memory_bank: MemoryBank) -> None:
     print("  - 'quit': Exit the program\n")
 
     context_loaded = False
-    last_context_conflicts = None
 
     while True:
         try:
-            if context_loaded and last_context_conflicts:
-                prompt = "❗ > "
-            elif context_loaded:
+            if context_loaded:
                 prompt = "✓ > "
             else:
                 prompt = "> "
@@ -177,7 +173,6 @@ def run_interactive(memory_bank: MemoryBank) -> None:
                     memory_bank.load_memory(filename)
                     print(f"📥 Loaded from: {filename}")
                     context_loaded = False
-                    last_context_conflicts = None
                 except FileNotFoundError:
                     print(f"❌ File not found: {filename}")
                 except Exception as e:
@@ -189,7 +184,6 @@ def run_interactive(memory_bank: MemoryBank) -> None:
                     memory_bank.clear_memory()
                     print("✅ Memory cleared")
                     context_loaded = False
-                    last_context_conflicts = None
                 else:
                     print("Cancelled")
 
@@ -207,13 +201,7 @@ def run_interactive(memory_bank: MemoryBank) -> None:
 
                 if is_context_only:
                     context_loaded = True
-                    last_context_conflicts = result.get("conflicts")
-
-                    if last_context_conflicts:
-                        print(f"\n⚠️ {len(last_context_conflicts)} conflict(s) detected in context.")
-                        print("   These will be resolved when you ask a question.")
-                    else:
-                        print("\n✅ Context loaded successfully. You can now ask questions.")
+                    print("\n✅ Context loaded successfully. You can now ask questions.")
 
                 print()
 
