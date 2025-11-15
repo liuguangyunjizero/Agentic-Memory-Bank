@@ -1,10 +1,7 @@
 """
-Configuration Management Module
-
-Loads and manages all system configuration parameters with support for:
-- Environment variable loading
-- Multiple LLM providers (DeepSeek/OpenAI/Local)
-- Cross-platform path handling
+Centralized configuration management system that loads settings from environment
+variables and provides a unified interface for all system parameters.
+Supports multiple LLM backends and agent-specific tuning parameters.
 """
 
 import os
@@ -16,19 +13,23 @@ load_dotenv()
 
 
 class Config:
-    """Global configuration class for the system."""
+    """
+    Main configuration container that aggregates all system settings.
+    Automatically selects appropriate LLM backend based on environment configuration.
+    """
 
     def __init__(self):
-        """Initialize configuration from environment variables."""
+        """
+        Load all configuration values from environment variables with sensible defaults.
+        Creates necessary directories and validates provider selection.
+        """
 
         self.PROJECT_ROOT = Path(__file__).parent.parent
 
-        # LLM provider configuration
         self.LLM_PROVIDER: Literal["deepseek", "openai", "local"] = os.getenv(
             "LLM_PROVIDER", "deepseek"
         ).lower()
 
-        # DeepSeek configuration
         self.DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
         self.DEEPSEEK_BASE_URL = os.getenv(
             "DEEPSEEK_BASE_URL",
@@ -36,7 +37,6 @@ class Config:
         )
         self.DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
-        # OpenAI configuration
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
         self.OPENAI_BASE_URL = os.getenv(
             "OPENAI_BASE_URL",
@@ -44,47 +44,38 @@ class Config:
         )
         self.OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
 
-        # Local model configuration
         self.LOCAL_BASE_URL = os.getenv(
             "LOCAL_BASE_URL",
             "http://127.0.0.1:6001/v1"
         )
         self.LOCAL_MODEL = os.getenv("LOCAL_MODEL", "default")
 
-        # General LLM parameters
         self.LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
         self.LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
         self.LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.95"))
 
-        # Set current LLM config based on provider
         self._set_current_llm_config()
 
-        # Embedding configuration
         self.EMBEDDING_MODEL = os.getenv(
             "EMBEDDING_MODEL",
             "all-MiniLM-L6-v2"
         )
 
-        # Retrieval configuration
         self.RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "5"))
         self.RETRIEVAL_ALPHA = float(os.getenv("RETRIEVAL_ALPHA", "0.5"))
 
-        # Search API configuration
         self.SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
         self.JINA_API_KEY = os.getenv("JINA_API_KEY", "")
 
-        # ReAct configuration
         self.MAX_LLM_CALL_PER_RUN = int(os.getenv("MAX_LLM_CALL_PER_RUN", "60"))
         self.MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "128000"))
 
-        # Path configuration (cross-platform support via pathlib)
         self.TEMP_DIR = self.PROJECT_ROOT / os.getenv("TEMP_DIR", "data/temp")
         self.STORAGE_DIR = self.PROJECT_ROOT / os.getenv("STORAGE_DIR", "data/storage")
 
         self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Agent context window configuration
         self.CLASSIFICATION_AGENT_WINDOW = int(
             os.getenv("CLASSIFICATION_AGENT_WINDOW", "32000")
         )
@@ -101,7 +92,6 @@ class Config:
             os.getenv("PLANNING_AGENT_WINDOW", "32000")
         )
 
-        # Agent-specific LLM parameters
         self.CLASSIFICATION_AGENT_TEMPERATURE = float(
             os.getenv("CLASSIFICATION_AGENT_TEMPERATURE", "0.4")
         )
@@ -151,14 +141,15 @@ class Config:
             os.getenv("VISIT_EXTRACTION_TOP_P", "0.85")
         )
 
-        # Long text processing
         self.CHUNK_RATIO = float(os.getenv("CHUNK_RATIO", "0.9"))
 
-        # Logging configuration
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def _set_current_llm_config(self):
-        """Set current LLM configuration based on LLM_PROVIDER."""
+        """
+        Select and activate the appropriate LLM configuration based on the provider setting.
+        Raises ValueError if an unsupported provider is specified.
+        """
         if self.LLM_PROVIDER == "deepseek":
             self.LLM_API_KEY = self.DEEPSEEK_API_KEY
             self.LLM_BASE_URL = self.DEEPSEEK_BASE_URL
@@ -179,8 +170,7 @@ class Config:
 
     def get_llm_config(self) -> dict:
         """
-        Get current LLM configuration as a dictionary.
-        Returns dict containing API key, base URL, model, and other parameters.
+        Package the active LLM settings into a dictionary for easy passing to clients.
         """
         return {
             "provider": self.LLM_PROVIDER,
@@ -193,7 +183,7 @@ class Config:
         }
 
     def __repr__(self) -> str:
-        """Return configuration summary."""
+        """Generate a human-readable summary of key configuration values."""
         return (
             f"Config(\n"
             f"  LLM Provider: {self.LLM_PROVIDER}\n"

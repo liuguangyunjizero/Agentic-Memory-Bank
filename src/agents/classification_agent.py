@@ -1,7 +1,6 @@
 """
-Classification/Clustering Agent
-
-Responsibility: Classify/cluster long context by topics
+Segmentation agent that divides large context into topic-based chunks.
+Handles automatic chunking when input exceeds model context window.
 """
 
 import logging
@@ -15,41 +14,34 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ClassificationInput:
-    """Classification Agent input"""
-    context: str  # Long context text (may be very long)
+    """Input payload containing raw context text for segmentation."""
+    context: str
 
 
 @dataclass
 class Cluster:
-    """Clustering result"""
-    cluster_id: str  # Cluster ID
-    content: str  # Original text chunk (verbatim)
+    """Single topic segment extracted from the original context."""
+    cluster_id: str
+    content: str
 
 
 @dataclass
 class ClassificationOutput:
-    """Classification Agent output"""
-    clusters: List[Cluster]  # Cluster list
+    """Collection of all segments produced by the agent."""
+    clusters: List[Cluster]
 
 
 class ClassificationAgent(BaseAgent):
     """
-    Classification/Clustering Agent
-
-    Uses chunking strategy when processing very long text
+    Divides long context into self-contained chunks for downstream processing.
+    Automatically switches to multi-chunk mode when input exceeds window limits.
     """
 
     def __init__(self, llm_client, window_size: int = 32000, chunk_ratio: float = 0.9,
                  temperature: float = 0.4, top_p: float = 0.9):
         """
-        Initialize Classification Agent
-
-        Args:
-            llm_client: LLMClient instance
-            window_size: Agent window size (tokens)
-            chunk_ratio: Chunking ratio (leave margin)
-            temperature: Temperature parameter
-            top_p: Sampling parameter
+        Configure window limits and sampling parameters for segmentation.
+        Lower temperature ensures consistent adherence to the chunking format.
         """
         super().__init__(llm_client)
         self.window_size = window_size
@@ -61,7 +53,7 @@ class ClassificationAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "ClassificationAgent":
-        """Create Agent from config"""
+        """Build agent from centralized configuration object."""
         return cls(
             llm_client=llm_client,
             window_size=config.CLASSIFICATION_AGENT_WINDOW,
@@ -72,38 +64,24 @@ class ClassificationAgent(BaseAgent):
 
     def run(self, input_data: ClassificationInput) -> ClassificationOutput:
         """
-        Execute classification/clustering
-
-        Args:
-            input_data: ClassificationInput instance
-
-        Returns:
-            ClassificationOutput instance
+        Execute segmentation with automatic overflow handling.
+        Routes to single-chunk or multi-chunk processing based on token count.
         """
-        # 1. Check if too long
         token_count = self.llm_client.count_tokens(input_data.context)
 
         if token_count <= self.window_size:
-            # Not too long, call LLM directly
             return self._classify_single_chunk(input_data)
         else:
-            # Too long, load in chunks
             logger.warning(f"Context too long ({token_count} tokens), enabling chunked processing")
             return self._classify_multiple_chunks(input_data)
 
     def _classify_single_chunk(self, input_data: ClassificationInput) -> ClassificationOutput:
         """
-        Process single chunk
-
-        Args:
-            input_data: ClassificationInput instance
-
-        Returns:
-            ClassificationOutput instance
+        Process context that fits within the model's attention window.
+        Logs full prompt and response for debugging segmentation issues.
         """
         prompt = self._build_prompt(input_data.context)
 
-        # Log LLM input
         logger.debug("="*80)
         logger.debug("Classification Agent LLM input:")
         logger.debug(prompt)
@@ -111,7 +89,6 @@ class ClassificationAgent(BaseAgent):
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # Log LLM raw response
         logger.debug("="*80)
         logger.debug("Classification Agent LLM raw response:")
         logger.debug(response)
@@ -121,13 +98,8 @@ class ClassificationAgent(BaseAgent):
 
     def _classify_multiple_chunks(self, input_data: ClassificationInput) -> ClassificationOutput:
         """
-        Process multiple chunks (load in batches)
-
-        Args:
-            input_data: ClassificationInput instance
-
-        Returns:
-            ClassificationOutput instance
+        Handle oversized context by splitting into overlapping segments.
+        Each segment is processed independently and results are concatenated.
         """
         chunk_size = int(self.window_size * self.chunk_ratio)
         chunks = self._split_by_boundaries(input_data.context, chunk_size)
@@ -145,26 +117,13 @@ class ClassificationAgent(BaseAgent):
         return ClassificationOutput(clusters=all_clusters)
 
     def _build_prompt(self, context: str) -> str:
-        """
-        Build prompt
-
-        Args:
-            context: Context content
-
-        Returns:
-            Complete prompt
-        """
+        """Inject user context into the segmentation template."""
         return CLASSIFICATION_PROMPT.format(context=context)
 
     def _extract_content(self, content_str: str) -> str:
         """
-        Extract content between CONTENT_START and CONTENT_END
-
-        Args:
-            content_str: String containing CONTENT_START/CONTENT_END markers
-
-        Returns:
-            Extracted content, or empty string if extraction fails
+        Pull verbatim text between CONTENT_START and CONTENT_END markers.
+        Returns empty string if markers are missing to allow graceful degradation.
         """
         import re
         match = re.search(r'CONTENT_START(.*?)CONTENT_END', content_str, re.DOTALL)
@@ -175,17 +134,11 @@ class ClassificationAgent(BaseAgent):
 
     def _parse_response(self, response: str, input_data: ClassificationInput = None) -> ClassificationOutput:
         """
-        Parse LLM response (simple delimiter format, not JSON)
-
-        Args:
-            response: LLM response string
-            input_data: ClassificationInput instance (used to populate content)
-
-        Returns:
-            ClassificationOutput instance
+        Extract cluster blocks from plain-text LLM output.
+        Falls back to returning entire input as single cluster if parsing fails.
+        This prevents pipeline breakage while preserving all user content.
         """
         try:
-            # Normalize newlines
             normalized = response.replace('\r', '')
 
             if "SHOULD_CLUSTER" not in normalized:
@@ -222,7 +175,6 @@ class ClassificationAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Failed to parse classification response: {str(e)}")
 
-            # Fallback: Return default single cluster
             if input_data and input_data.context:
                 content_fallback = input_data.context
             else:
@@ -237,16 +189,10 @@ class ClassificationAgent(BaseAgent):
 
     def _split_by_boundaries(self, text: str, chunk_size: int) -> List[str]:
         """
-        Split text by paragraph boundaries
-
-        Args:
-            text: Input text
-            chunk_size: Chunk size (by character estimate, about 1/3 token)
-
-        Returns:
-            List of text chunks
+        Divide text at paragraph breaks to preserve semantic coherence.
+        Uses character-based estimation with 3:1 character-to-token ratio.
+        Accumulates paragraphs until approaching chunk size limit.
         """
-        # Simple implementation: split by paragraphs
         paragraphs = text.split('\n\n')
         chunks = []
         current_chunk = []
@@ -256,7 +202,6 @@ class ClassificationAgent(BaseAgent):
             para_size = len(para)
 
             if current_size + para_size > chunk_size * 3 and current_chunk:
-                # Current chunk is full, save and start new chunk
                 chunks.append('\n\n'.join(current_chunk))
                 current_chunk = [para]
                 current_size = para_size
@@ -264,7 +209,6 @@ class ClassificationAgent(BaseAgent):
                 current_chunk.append(para)
                 current_size += para_size
 
-        # Save last chunk
         if current_chunk:
             chunks.append('\n\n'.join(current_chunk))
 

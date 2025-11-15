@@ -1,7 +1,6 @@
 """
-Interaction Tree - Interaction History Layer
-
-Stores complete context text for each memory node.
+Simple storage layer that preserves complete original context for each memory node.
+Enables deep retrieval when summaries are insufficient for detailed analysis.
 """
 
 from typing import Dict, Any, Optional, List
@@ -9,63 +8,55 @@ from typing import Dict, Any, Optional, List
 
 class InteractionTree:
     """
-    Interaction Tree manager.
-
-    Minimalist design: only stores {node_id: text} mapping.
-    Text contains complete context without distinguishing reasoning, tool calls, etc.
+    Flat key-value store mapping node IDs to their full context text.
+    Designed for simplicity - no hierarchy or structure beyond basic lookup.
     """
 
     def __init__(self):
-        """Initialize empty interaction tree."""
+        """Initialize with empty storage."""
         self.node_entries: Dict[str, str] = {}
 
     def add_entry(self, node_id: str, text: str):
         """
-        Add entry (saves complete context directly).
-
-        Args:
-            node_id: Associated node ID
-            text: Complete context text
+        Store complete context text associated with a node.
+        Overwrites any existing entry for the same ID.
         """
         self.node_entries[node_id] = text
 
     def get_entry(self, node_id: str) -> Optional[str]:
         """
-        Get node's complete context.
-
-        Args:
-            node_id: Node ID
-
-        Returns:
-            Complete context text, None if not found
+        Retrieve the full context for a node.
+        Returns None if no entry exists for the given ID.
         """
         return self.node_entries.get(node_id)
 
     def remove_entry(self, node_id: str):
-        """Remove node's entry."""
+        """Delete the context entry for a node if it exists."""
         if node_id in self.node_entries:
             del self.node_entries[node_id]
 
     def get_total_entries(self) -> int:
-        """Get total entry count."""
+        """Count how many context entries are stored."""
         return len(self.node_entries)
 
     def clear(self):
-        """Clear all data (use with caution!)."""
+        """Wipe all stored context entries from memory."""
         self.node_entries.clear()
 
     def to_dict(self) -> Dict[str, Any]:
-        """Export as dictionary."""
+        """Package all entries for JSON export."""
         return {
             "node_entries": self.node_entries
         }
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "InteractionTree":
-        """Create InteractionTree from dictionary."""
+        """
+        Rebuild tree from deserialized data.
+        Handles simple string entries for each node ID.
+        """
         tree = InteractionTree()
 
-        # New format: directly text
         if "node_entries" in data:
             for node_id, entry_data in data["node_entries"].items():
                 if isinstance(entry_data, str):
@@ -74,5 +65,5 @@ class InteractionTree:
         return tree
 
     def __repr__(self) -> str:
-        """Return string representation."""
+        """Show entry count for quick status check."""
         return f"InteractionTree(entries={len(self.node_entries)})"

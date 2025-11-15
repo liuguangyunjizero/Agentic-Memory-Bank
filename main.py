@@ -1,7 +1,7 @@
 """
-Agentic Memory Bank - Command Line Interface
-
-Provides interactive mode for querying with persistent memory management.
+Command-line interface for the Agentic Memory Bank system.
+This module provides an interactive shell for users to query information
+using a persistent memory-backed AI system.
 """
 
 import sys
@@ -18,7 +18,6 @@ sys.path.insert(0, str(project_root))
 from src.memory_bank import MemoryBank
 from src.config import Config
 
-# Agent identifier keywords for display hooks
 AGENT_IDENTIFIERS = {
     "ReAct Agent": "Web Information Seeking Master with memory and tool access",
     "Planning Agent": "incremental task planning expert",
@@ -28,7 +27,6 @@ AGENT_IDENTIFIERS = {
     "Integration Agent": "memory integration expert"
 }
 
-# Third-party library loggers to suppress
 SUPPRESSED_LOGGERS = [
     "httpx", "httpcore", "sentence_transformers",
     "urllib3", "urllib3.connectionpool", "openai", "openai._base_client"
@@ -36,7 +34,10 @@ SUPPRESSED_LOGGERS = [
 
 
 def setup_logging() -> None:
-    """Configure logging with console (INFO) and file (DEBUG) output."""
+    """
+    Initialize the logging system with dual output: console shows INFO level,
+    while file captures DEBUG level for detailed troubleshooting.
+    """
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
 
@@ -69,8 +70,8 @@ def setup_logging() -> None:
 
 def _detect_agent_type(messages: Any) -> tuple[Optional[str], bool]:
     """
-    Detect agent type from LLM messages.
-    Returns (agent_name, is_react_agent) or (None, False) for tool-internal calls.
+    Analyze LLM input to identify which agent is making the call.
+    Returns the agent name and whether it's a ReAct agent, or None if detection fails.
     """
     prompt_text = ""
     if isinstance(messages, str):
@@ -94,8 +95,8 @@ def _detect_agent_type(messages: Any) -> tuple[Optional[str], bool]:
 
 def setup_display_hook() -> None:
     """
-    Monkey-patch LLMClient.call to display agent activity.
-    Shows simple indicators for non-ReAct agents (ReAct handles its own display).
+    Patch the LLM client to provide visual feedback when agents are processing.
+    This enables users to see which agent is currently working without verbose logging.
     """
     from src.utils.llm_client import LLMClient
 
@@ -122,8 +123,8 @@ def setup_display_hook() -> None:
 
 def run_interactive(memory_bank: MemoryBank) -> None:
     """
-    Interactive query mode with context loading and memory management.
-    Supports two modes: direct questions and context-only loading.
+    Main interactive loop handling user input and dispatching to the memory bank.
+    Supports both context loading and direct question-answering modes.
     """
     print("\n🚀 Agentic Memory Bank - Interactive Mode")
     print("\n📖 Input Modes:")
@@ -216,7 +217,9 @@ def run_interactive(memory_bank: MemoryBank) -> None:
 
 
 def main() -> None:
-    """Main entry point for interactive mode with optional memory loading."""
+    """
+    Application entry point that initializes all components and starts the interactive shell.
+    """
     parser = argparse.ArgumentParser(
         description="Agentic Memory Bank - Interactive Mode"
     )

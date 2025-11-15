@@ -1,7 +1,6 @@
 """
-Deep Retrieval Tool
-
-Retrieves complete Interaction Tree content for Query Graph nodes.
+Tool for accessing complete original context stored in the interaction tree.
+Provides full text retrieval when summaries don't contain sufficient detail.
 """
 
 import logging
@@ -11,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 class DeepRetrievalTool:
-    """Deep Retrieval Tool: Read complete Interaction Tree content of Query Graph nodes"""
+    """
+    Fetches uncompressed original context for graph nodes.
+    Used when agents need more detail than what's in the structured summary.
+    """
 
     name = "deep_retrieval"
     description = "Read the complete Interaction Tree content of a Query Graph node."
@@ -29,23 +31,15 @@ class DeepRetrievalTool:
 
     def __init__(self, interaction_tree):
         """
-        Initialize Deep Retrieval Tool
-
-        Args:
-            interaction_tree: InteractionTree instance
+        Bind to an interaction tree instance for context lookups.
         """
         self.interaction_tree = interaction_tree
         logger.info("DeepRetrievalTool initialized successfully")
 
     def call(self, params: Dict[str, Any]) -> str:
         """
-        Execute Deep Retrieval
-
-        Args:
-            params: {"node_id": str}
-
-        Returns:
-            str: Complete Interaction Tree content (plain text)
+        Look up and return the full original text for the specified node.
+        Returns error message if node not found.
         """
         node_id = params.get("node_id")
 
@@ -57,7 +51,6 @@ class DeepRetrievalTool:
         logger.info(f"Executing Deep Retrieval: node_id={node_id[:8]}...")
 
         try:
-            # Read complete context text
             text = self.interaction_tree.get_entry(node_id)
 
             if not text:
@@ -66,7 +59,7 @@ class DeepRetrievalTool:
                 return warning_msg
 
             logger.info(f"Deep Retrieval completed: 1 entry retrieved")
-            return text  # Return text directly
+            return text
 
         except Exception as e:
             error_msg = f"Deep Retrieval failed: {str(e)}"

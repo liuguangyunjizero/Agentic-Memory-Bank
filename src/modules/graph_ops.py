@@ -1,5 +1,6 @@
 """
-Graph Operations Module
+Encapsulates common graph manipulation operations in a single interface.
+Coordinates changes across both the graph structure and interaction tree.
 """
 
 import logging
@@ -9,15 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 class GraphOperations:
-    """Graph operations module (encapsulates Query Graph CRUD operations)"""
+    """
+    Provides high-level operations that maintain consistency between
+    the query graph and its associated interaction tree.
+    """
 
     def __init__(self, graph, interaction_tree):
         """
-        Initialize graph operations module
-
-        Args:
-            graph: QueryGraph instance
-            interaction_tree: InteractionTree instance
+        Bind to specific graph and tree instances for coordinated updates.
         """
         from src.storage.query_graph import QueryGraph
         from src.storage.interaction_tree import InteractionTree
@@ -32,36 +32,25 @@ class GraphOperations:
         logger.info("Graph operations module initialized successfully")
 
     def add_node(self, node) -> None:
-        """
-        Add node
-
-        Args:
-            node: QueryGraphNode instance
-        """
+        """Insert a node into the graph."""
         self.graph.add_node(node)
 
     def delete_node(self, node_id: str) -> None:
         """
-        Delete node and all its edges
-
-        Args:
-            node_id: Node ID
+        Remove a node from both the graph and interaction tree.
+        Cleans up all edges automatically via graph's delete logic.
         """
         if not self.graph.has_node(node_id):
             logger.warning(f"Node does not exist, cannot delete: {node_id[:8]}...")
             return
 
         self.graph.delete_node(node_id)
-        # Also delete entry in InteractionTree
         self.interaction_tree.remove_entry(node_id)
 
     def add_edge(self, node_id1: str, node_id2: str) -> None:
         """
-        Create related edge between two nodes
-
-        Args:
-            node_id1: First node ID
-            node_id2: Second node ID
+        Create a bidirectional relationship between two nodes.
+        Raises ValueError if either node doesn't exist.
         """
         try:
             self.graph.add_edge(node_id1, node_id2)
@@ -70,15 +59,7 @@ class GraphOperations:
             raise
 
     def get_neighbors(self, node_id: str) -> List:
-        """
-        Get all neighbors of a node
-
-        Args:
-            node_id: Node ID
-
-        Returns:
-            List of neighbor nodes
-        """
+        """Retrieve all nodes directly connected to the specified node."""
         return self.graph.get_neighbors(node_id)
 
     def merge_nodes(
@@ -87,20 +68,12 @@ class GraphOperations:
         new_node
     ) -> None:
         """
-        Merge multiple nodes:
-        1. Create new node (initially isolated, does not inherit edges)
-        2. Delete old nodes
-
-        Note: New node no longer automatically inherits old nodes' edges, needs re-analysis
-
-        Args:
-            old_node_ids: List of old node IDs to merge
-            new_node: New merged node
+        Replace multiple nodes with a single merged node.
+        The new node starts isolated - edges must be re-established via analysis.
+        This allows the system to determine fresh relationships after merging.
         """
-        # 1. Add new node (does not inherit any edges)
         self.add_node(new_node)
 
-        # 2. Delete old nodes
         deleted_count = 0
         for old_node_id in old_node_ids:
             if self.graph.has_node(old_node_id):

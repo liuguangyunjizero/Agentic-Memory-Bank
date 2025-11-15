@@ -1,7 +1,6 @@
 """
-Planning Agent
-
-Responsibility: Incremental planning, decides only the next task each time
+Task orchestration agent using incremental planning strategy.
+Decides only the next action at each call based on current state and feedback.
 """
 
 import logging
@@ -16,43 +15,38 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ConflictNotification:
-    """Conflict notification"""
+    """Alert indicating detected contradictions requiring validation."""
     conflicting_node_ids: List[str]
     conflict_description: str
 
 
 @dataclass
 class PlanningInput:
-    """Planning Agent input"""
-    insight_doc: InsightDoc  # Current task state
-    new_memory_nodes: Optional[List] = None  # Newly generated memory
-    conflict_notification: Optional[ConflictNotification] = None  # Conflict notification
+    """Planning context including task history, new knowledge, and conflict signals."""
+    insight_doc: InsightDoc
+    new_memory_nodes: Optional[List] = None
+    conflict_notification: Optional[ConflictNotification] = None
 
 
 @dataclass
 class PlanningOutput:
-    """Planning Agent output"""
+    """Next step decision with updated goal and task history."""
     task_goal: str
-    completed_tasks: List[CompletedTask]  # List of CompletedTask objects
-    current_task: str  # Empty string means no task
+    completed_tasks: List[CompletedTask]
+    current_task: str
     current_task_keywords: List[str]
 
 
 class PlanningAgent(BaseAgent):
     """
-    Planning Agent
-
-    Incremental planning strategy, decides only the next step each time
+    Generates single next-step decisions rather than full task sequences.
+    Reacts to emerging information by adjusting strategy after each execution cycle.
     """
 
     def __init__(self, llm_client, temperature: float = 0.6, top_p: float = 0.95):
         """
-        Initialize Planning Agent
-
-        Args:
-            llm_client: LLMClient instance
-            temperature: Temperature parameter
-            top_p: Sampling parameter
+        Configure reasoning parameters for adaptive decision making.
+        Higher temperature allows creative responses to unexpected states.
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -61,7 +55,7 @@ class PlanningAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "PlanningAgent":
-        """Create Agent from config"""
+        """Build agent from centralized configuration object."""
         return cls(
             llm_client=llm_client,
             temperature=config.PLANNING_AGENT_TEMPERATURE,
@@ -70,17 +64,11 @@ class PlanningAgent(BaseAgent):
 
     def run(self, input_data: PlanningInput) -> PlanningOutput:
         """
-        Execute task planning
-
-        Args:
-            input_data: PlanningInput instance
-
-        Returns:
-            PlanningOutput instance
+        Determine next action based on fresh execution state.
+        Logs full prompt and response to trace planning decisions.
         """
         prompt = self._build_prompt(input_data)
 
-        # Log LLM input
         logger.debug("="*80)
         logger.debug("Planning Agent LLM Input:")
         logger.debug(prompt)
@@ -88,7 +76,6 @@ class PlanningAgent(BaseAgent):
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # Log LLM raw response
         logger.debug("="*80)
         logger.debug("Planning Agent LLM Raw Response:")
         logger.debug(response)
@@ -98,15 +85,10 @@ class PlanningAgent(BaseAgent):
 
     def _build_prompt(self, input_data: PlanningInput) -> str:
         """
-        Build prompt
-
-        Args:
-            input_data: PlanningInput instance
-
-        Returns:
-            Complete prompt
+        Assemble current state into planning template.
+        Includes full summaries without truncation to inform better decisions.
+        Formats conflicts and new nodes to guide priority selection.
         """
-        # Format completed tasks
         completed_tasks = [
             {
                 "type": task.type.value,
@@ -118,31 +100,25 @@ class PlanningAgent(BaseAgent):
         ]
         completed_tasks_str = format_completed_tasks(completed_tasks)
 
-        # Format current pending task (important!)
         current_task_str = "(none)"
         if input_data.insight_doc.current_task:
             current_task_str = f"Currently executing: {input_data.insight_doc.current_task}"
         current_keywords = input_data.insight_doc.current_task_keywords
         current_keywords_str = ", ".join(current_keywords) if current_keywords else "(none)"
 
-        # Format new memory nodes
         new_memory_str = "(none)"
         if input_data.new_memory_nodes:
             lines = [f"Generated {len(input_data.new_memory_nodes)} new memory node(s):\n"]
             for i, node_info in enumerate(input_data.new_memory_nodes, 1):
                 if isinstance(node_info, str):
-                    # Compatible with old format (ID only)
                     lines.append(f"{i}. Node ID: {node_info}")
                 else:
-                    # New format (with detailed information)
                     lines.append(f"{i}. Topic: {node_info.get('context', 'N/A')}")
                     lines.append(f"   Keywords: {', '.join(node_info.get('keywords', []))}")
-                    # Do NOT truncate summary - pass complete content
                     summary = node_info.get('summary', '')
                     lines.append(f"   Summary: {summary}")
             new_memory_str = "\n".join(lines)
 
-        # Format conflict notification
         conflict_str = "(none)"
         if input_data.conflict_notification:
             conflict_str = (
@@ -161,13 +137,9 @@ class PlanningAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> PlanningOutput:
         """
-        Parse LLM response
-
-        Args:
-            response: LLM response string
-
-        Returns:
-            PlanningOutput instance
+        Extract next task and updated history from JSON response.
+        Converts task dictionaries to CompletedTask objects for type safety.
+        Raises exception on parse failure to signal planning breakdown.
         """
         try:
             data = self._parse_json_response(response)
@@ -175,7 +147,6 @@ class PlanningAgent(BaseAgent):
             task_goal = data.get("task_goal", "")
             current_task = data.get("current_task", "")
 
-            # Convert dictionary list to CompletedTask object list
             completed_tasks_data = data.get("completed_tasks", [])
             completed_tasks = [
                 CompletedTask(

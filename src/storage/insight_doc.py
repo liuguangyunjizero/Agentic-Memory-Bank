@@ -1,7 +1,6 @@
 """
-Insight Doc - Task State Layer
-
-Manages task planning and execution state using incremental planning strategy.
+Task state management layer that tracks execution progress through incremental planning.
+Records completed work and maintains the current active task for the system to execute.
 """
 
 from enum import Enum
@@ -10,7 +9,7 @@ from dataclasses import dataclass, field
 
 
 class TaskType(Enum):
-    """Task type enumeration."""
+    """Categorizes tasks into regular information gathering or conflict resolution."""
     NORMAL = "NORMAL"
     CROSS_VALIDATE = "CROSS_VALIDATE"
 
@@ -18,13 +17,8 @@ class TaskType(Enum):
 @dataclass
 class CompletedTask:
     """
-    Record of a completed task.
-
-    Attributes:
-        type: Task type (NORMAL or CROSS_VALIDATE)
-        description: Detailed task description
-        status: Execution status ("success" or "failure")
-        context: Condensed 1-2 sentence summary
+    Represents a finished unit of work with execution outcome.
+    Stores enough information to inform future planning without repeating work.
     """
     type: TaskType
     description: str
@@ -32,7 +26,7 @@ class CompletedTask:
     context: str
 
     def to_dict(self) -> Dict[str, Any]:
-        """Export as dictionary for persistence."""
+        """Convert to plain dictionary for JSON serialization."""
         return {
             "type": self.type.value,
             "description": self.description,
@@ -42,7 +36,7 @@ class CompletedTask:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "CompletedTask":
-        """Create CompletedTask from dictionary."""
+        """Reconstruct from dictionary loaded from storage."""
         return CompletedTask(
             type=TaskType(data["type"]),
             description=data["description"],
@@ -54,17 +48,8 @@ class CompletedTask:
 @dataclass
 class InsightDoc:
     """
-    Insight Doc main class - core data structure for task state layer.
-
-    Uses incremental planning:
-    - current_task is either empty string (no task) or a single task string
-    - No priority queue maintained; decides next step each iteration
-
-    Attributes:
-        doc_id: Unique identifier for temporary storage mapping
-        task_goal: Original user question
-        completed_tasks: List of completed subtasks
-        current_task: Current pending task (empty string means no task)
+    Central state tracker for task execution using one-step-at-a-time planning.
+    Maintains history of what's been done and a single current task to work on next.
     """
     doc_id: str
     task_goal: str
@@ -81,7 +66,7 @@ class InsightDoc:
         status: str,
         context: str
     ):
-        """Add a completed task to the list."""
+        """Append a finished task to the completion history."""
         task = CompletedTask(
             type=task_type,
             description=description,
@@ -91,11 +76,11 @@ class InsightDoc:
         self.completed_tasks.append(task)
 
     def set_current_task(self, task: str):
-        """Set the current task (empty string for no task)."""
+        """Update what the system should work on next, or clear to indicate completion."""
         self.current_task = task
 
     def to_dict(self) -> Dict[str, Any]:
-        """Export as dictionary for persistence."""
+        """Package entire state for export to JSON."""
         return {
             "doc_id": self.doc_id,
             "task_goal": self.task_goal,
@@ -108,7 +93,7 @@ class InsightDoc:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "InsightDoc":
-        """Create InsightDoc from dictionary."""
+        """Recreate state object from deserialized JSON data."""
         return InsightDoc(
             doc_id=data["doc_id"],
             task_goal=data["task_goal"],
@@ -123,14 +108,14 @@ class InsightDoc:
         )
 
     def register_task_node(self, task_description: str, node_id: str) -> None:
-        """Associate a node with the task description."""
+        """Link a graph node to the task that created it for traceability."""
         task_key = task_description or self.task_goal or "default"
         nodes = self.task_node_map.setdefault(task_key, [])
         if node_id not in nodes:
             nodes.append(node_id)
 
     def get_tasks_for_nodes(self, node_ids: List[str]) -> List[str]:
-        """Return task descriptions that produced any of the given nodes."""
+        """Find which tasks generated the specified nodes."""
         result = []
         node_set = set(node_ids)
         for task_desc, nodes in self.task_node_map.items():
@@ -139,7 +124,10 @@ class InsightDoc:
         return result
 
     def mark_task_failed(self, task_description: str, reason: str = "") -> None:
-        """Mark a task as failed and update its context."""
+        """
+        Flag a task as having failed to prevent using its outputs.
+        Removes associated nodes from the mapping to avoid invalid references.
+        """
         if not task_description:
             return
         self.failed_tasks[task_description] = reason or "Failed"
@@ -148,12 +136,11 @@ class InsightDoc:
                 task.status = "Failed"
                 if reason:
                     task.context = reason
-        # Remove obsolete node mapping to avoid reusing invalidated context
         if task_description in self.task_node_map:
             del self.task_node_map[task_description]
 
     def enforce_failed_statuses(self, tasks: List[CompletedTask]) -> List[CompletedTask]:
-        """Ensure tasks marked failed stay failed even after planner updates."""
+        """Apply failure state to tasks even if planner tries to change their status."""
         if not self.failed_tasks:
             return tasks
         for task in tasks:
@@ -165,7 +152,7 @@ class InsightDoc:
         return tasks
 
     def __repr__(self) -> str:
-        """Return string representation."""
+        """Provide quick summary of doc state."""
         return (
             f"InsightDoc(doc_id={self.doc_id}, "
             f"completed={len(self.completed_tasks)}, "

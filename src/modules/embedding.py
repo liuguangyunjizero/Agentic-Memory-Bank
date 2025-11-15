@@ -1,10 +1,6 @@
 """
-Embedding Computation Module
-
-Uses SentenceTransformer for local embedding computation:
-- Batch computation support
-- Vector normalization (for cosine similarity)
-- Similarity calculation
+Vector embedding generation using sentence transformers for semantic similarity.
+Runs locally without external API calls, producing normalized vectors for efficient comparison.
 """
 
 import numpy as np
@@ -17,19 +13,14 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingModule:
     """
-    Embedding Computation Module (inspired by A-mem)
-
-    Uses SentenceTransformer for local computation, no API calls needed
+    Converts text into dense vector representations using pre-trained models.
+    Handles model loading, vector computation, and normalization for downstream use.
     """
 
     def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
         """
-        Initialize Embedding Module
-
-        Args:
-            model_name: SentenceTransformer model name
-                       'all-MiniLM-L6-v2' - fast, dimension 384
-                       'all-mpnet-base-v2' - accurate, dimension 768
+        Load the specified transformer model into memory for encoding.
+        Different models offer trade-offs between speed and accuracy.
         """
         self.model_name = model_name
         logger.info(f"Loading Embedding model: {model_name}")
@@ -44,35 +35,23 @@ class EmbeddingModule:
     @classmethod
     def from_config(cls, config) -> "EmbeddingModule":
         """
-        Create Embedding module from Config object
-
-        Args:
-            config: Config instance
-
-        Returns:
-            EmbeddingModule instance
+        Factory method that extracts model selection from configuration object.
         """
         return cls(model_name=config.EMBEDDING_MODEL)
 
     def compute_embedding(self, text: str) -> np.ndarray:
         """
-        Compute embedding for a single text
-
-        Args:
-            text: Input text (usually combination of summary + context + keywords)
-
-        Returns:
-            Normalized embedding vector
+        Transform input text into a normalized embedding vector.
+        Empty inputs produce zero vectors to avoid downstream errors.
+        Normalization ensures cosine similarity can be computed via dot product.
         """
         if not text or not text.strip():
             logger.warning("Input text is empty, returning zero vector")
             dim = self.model.get_sentence_embedding_dimension()
             return np.zeros(dim)
 
-        # Compute embedding
         embedding = self.model.encode([text])[0]
 
-        # Normalize (for cosine similarity)
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
@@ -80,14 +59,9 @@ class EmbeddingModule:
         return embedding
 
     def get_embedding_dimension(self) -> int:
-        """
-        Get embedding dimension
-
-        Returns:
-            Vector dimension
-        """
+        """Return the dimensionality of vectors produced by this model."""
         return self.model.get_sentence_embedding_dimension()
 
     def __repr__(self) -> str:
-        """Return module summary"""
+        """Display model name and vector size for identification."""
         return f"EmbeddingModule(model={self.model_name}, dim={self.get_embedding_dimension()})"

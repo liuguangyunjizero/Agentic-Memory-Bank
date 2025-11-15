@@ -1,8 +1,6 @@
 """
-MemoryBankAdapter
-
-Adapter layer bridging the MemoryBank core with the host agent framework.
-Responsible for prompt enhancement, context interception, and conflict routing.
+Interface layer connecting memory bank operations to external agent frameworks.
+Manages prompt construction, context processing, and conflict workflow orchestration.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryBankAdapter:
-    """Bridge between MemoryBank and the external execution loop."""
+    """Coordinates memory operations and ReAct agent communication."""
 
     def __init__(self, memory_bank, retrieval_module) -> None:
         self.memory_bank = memory_bank
@@ -31,16 +29,14 @@ class MemoryBankAdapter:
         self._pending_conflicts: List[Dict[str, Any]] = []
         logger.info("MemoryBankAdapter initialized")
 
-    # Public API
-
     def has_pending_conflicts(self) -> bool:
-        """Check if there are pending conflicts to resolve."""
+        """Check whether unresolved conflicts remain in the queue."""
         result = len(self._pending_conflicts) > 0
         logger.debug(f"has_pending_conflicts() = {result}, queue size = {len(self._pending_conflicts)}")
         return result
 
     def enhance_prompt(self, insight_doc) -> str:
-        """Return the <task>/<memory> enhanced prompt for ReAct."""
+        """Build structured prompt containing task state and relevant memories for ReAct agent."""
         if insight_doc is None:
             return "<task>\nNo active task\n</task>\n\n<memory>\nNo related memory\n</memory>"
 
@@ -55,15 +51,14 @@ class MemoryBankAdapter:
         return prompt
 
     def intercept_context(self, context: str, task_type: str, insight_doc) -> None:
-        """Convert tool output into structured memory or resolve conflicts."""
+        """Route completed task output to either conflict resolution or normal memory storage."""
         if task_type == "CROSS_VALIDATE":
             self._handle_conflict_resolution(context, insight_doc)
         else:
             self._handle_normal_task(context, insight_doc)
 
-    # Prompt helpers
-
     def _build_task_section(self, insight_doc) -> str:
+        """Format current goal, history, and active task into readable section."""
         lines: List[str] = [f"Task goal: {insight_doc.task_goal}"]
 
         if insight_doc.completed_tasks:
@@ -84,6 +79,7 @@ class MemoryBankAdapter:
         return "\n".join(lines)
 
     def _build_memory_section(self, insight_doc) -> str:
+        """Retrieve and format memories relevant to the current task using hybrid search."""
         if not insight_doc.current_task:
             return "No related memory"
 
@@ -113,9 +109,11 @@ class MemoryBankAdapter:
 
         return "\n".join(lines).strip()
 
-    # Conflict resolution
-
     def _handle_conflict_resolution(self, validation_result: str, insight_doc) -> None:
+        """
+        Execute full conflict resolution pipeline: merge nodes, re-analyze, and update plan.
+        Uses validation evidence to guide integration decisions.
+        """
         print("\nResolving conflicts...")
 
         logger.info(f"_handle_conflict_resolution called, queue size = {len(self._pending_conflicts)}")
@@ -280,9 +278,11 @@ class MemoryBankAdapter:
         print(f"  Merged {len(conflict_ids)} conflicting node(s)")
         print("Conflict resolved\n")
 
-    # Normal task handling
-
     def _handle_normal_task(self, context: str, insight_doc) -> None:
+        """
+        Process tool output into structured memory: extract, analyze, detect conflicts, and plan next step.
+        Creates new node and establishes relationships with existing memories.
+        """
         print("\nOrganizing memory...")
 
         current_task = insight_doc.current_task if insight_doc.current_task else insight_doc.task_goal
@@ -418,46 +418,35 @@ class MemoryBankAdapter:
 
         print("Memory organized\n")
 
-    # Helpers
-
     def _find_conflict_groups(self, conflicts: List[Dict[str, str]]) -> List[List[str]]:
         """
-        Use Union-Find algorithm to detect chain conflicts and group transitive conflicts
-
-        Example: A-B conflict, B-C conflict -> A, B, C should be grouped together
-
-        Args:
-            conflicts: Conflict list, each conflict contains "new" and "existing" node IDs
-
-        Returns:
-            List of conflict groups, each group contains all transitive conflict node IDs
+        Detect transitive conflict chains using Union-Find algorithm.
+        Groups all mutually conflicting nodes together for simultaneous resolution.
+        Example: if A conflicts with B and B conflicts with C, all three are grouped.
         """
         if not conflicts:
             return []
 
-        # Union-Find: parent[node] = parent node of node
         parent: Dict[str, str] = {}
 
         def find(node: str) -> str:
-            """Find root node (with path compression)"""
+            """Find root with path compression for efficiency."""
             if node not in parent:
                 parent[node] = node
             if parent[node] != node:
-                parent[node] = find(parent[node])  # Path compression
+                parent[node] = find(parent[node])
             return parent[node]
 
         def union(node1: str, node2: str) -> None:
-            """Merge two nodes' sets"""
+            """Merge two nodes into same conflict group."""
             root1 = find(node1)
             root2 = find(node2)
             if root1 != root2:
-                parent[root2] = root1  # Set root2's parent to root1
+                parent[root2] = root1
 
-        # 1. Build Union-Find: process all conflict pairs
         for conflict in conflicts:
             union(conflict["new"], conflict["existing"])
 
-        # 2. Group by root node
         groups: Dict[str, List[str]] = {}
         for node in parent.keys():
             root = find(node)
@@ -465,7 +454,6 @@ class MemoryBankAdapter:
                 groups[root] = []
             groups[root].append(node)
 
-        # 3. Return all conflict groups (filter single-node groups)
         result = [group for group in groups.values() if len(group) > 1]
         logger.info(f"Detected {len(result)} conflict group(s) from {len(conflicts)} conflict(s)")
 
@@ -473,12 +461,14 @@ class MemoryBankAdapter:
 
     @staticmethod
     def _describe_conflict_group(conflicts: List[Dict[str, str]], group: List[str]) -> str:
+        """Extract first conflict description matching nodes in the group."""
         for conflict in conflicts:
             if conflict["new"] in group and conflict["existing"] in group:
                 return conflict["description"]
         return "Conflict detected among nodes"
 
     def _get_conflicting_node_ids(self) -> Optional[Dict[str, Any]]:
+        """Pop next conflict group from queue for resolution."""
         if self._pending_conflicts:
             payload = self._pending_conflicts.pop(0)
             node_ids = payload.get("node_ids", [])

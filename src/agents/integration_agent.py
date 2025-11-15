@@ -1,7 +1,6 @@
 """
-Memory Integration Agent
-
-Responsibility: Generate integrated new node based on conflicting nodes and validation results
+Conflict resolution agent that merges contradictory nodes into unified records.
+Synthesizes information from validation results and node neighborhoods.
 """
 
 import logging
@@ -15,12 +14,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NodeWithNeighbors:
-    """Node with neighbor information"""
+    """Complete node record including graph context for informed merging."""
     id: str
     summary: str
     context: str
     keywords: List[str]
-    neighbors: List[Dict[str, Any]]  # [{"id": ..., "context": ..., "keywords": [...]}, ...]
+    neighbors: List[Dict[str, Any]]
     merge_description: Optional[str] = None
     core_information: str = ""
     supporting_evidence: str = ""
@@ -30,33 +29,28 @@ class NodeWithNeighbors:
 
 @dataclass
 class IntegrationInput:
-    """Integration Agent input"""
-    nodes_to_merge: List[NodeWithNeighbors]  # Conflicting nodes to merge
-    validation_result: str  # Validation result from external framework
+    """Merge request containing conflicting nodes and fresh validation evidence."""
+    nodes_to_merge: List[NodeWithNeighbors]
+    validation_result: str
 
 
 @dataclass
 class IntegrationOutput:
-    """Integration Agent output"""
+    """Reconciled node with provenance explanation."""
     merged_node: Dict[str, Any]
-    merge_description: str  # Description of merge operation
+    merge_description: str
 
 
 class IntegrationAgent(BaseAgent):
     """
-    Memory Integration Agent
-
-    Integrates content from multiple conflicting nodes
+    Resolves conflicts by synthesizing authoritative merged nodes.
+    Operates after validation to ensure decisions are grounded in evidence.
     """
 
     def __init__(self, llm_client, temperature: float = 0.2, top_p: float = 0.85):
         """
-        Initialize Integration Agent
-
-        Args:
-            llm_client: LLMClient instance
-            temperature: Temperature parameter
-            top_p: Sampling parameter
+        Configure synthesis parameters for careful reconciliation.
+        Low temperature ensures precise adherence to validation findings.
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -65,7 +59,7 @@ class IntegrationAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "IntegrationAgent":
-        """Create Agent from config"""
+        """Build agent from centralized configuration object."""
         return cls(
             llm_client=llm_client,
             temperature=config.INTEGRATION_AGENT_TEMPERATURE,
@@ -74,20 +68,14 @@ class IntegrationAgent(BaseAgent):
 
     def run(self, input_data: IntegrationInput) -> IntegrationOutput:
         """
-        Integrate conflicting nodes
-
-        Args:
-            input_data: IntegrationInput instance
-
-        Returns:
-            IntegrationOutput instance
+        Synthesize merged node from conflicting sources.
+        Raises error if merge list is empty to prevent silent failures.
         """
         if not input_data.nodes_to_merge:
             raise ValueError("Node list to merge cannot be empty")
 
         prompt = self._build_prompt(input_data)
 
-        # Log LLM input
         logger.debug("="*80)
         logger.debug("Integration Agent LLM Input:")
         logger.debug(prompt)
@@ -95,7 +83,6 @@ class IntegrationAgent(BaseAgent):
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # Log LLM raw response
         logger.debug("="*80)
         logger.debug("Integration Agent LLM Raw Response:")
         logger.debug(response)
@@ -105,15 +92,9 @@ class IntegrationAgent(BaseAgent):
 
     def _build_prompt(self, input_data: IntegrationInput) -> str:
         """
-        Build prompt
-
-        Args:
-            input_data: IntegrationInput instance
-
-        Returns:
-            Complete prompt
+        Format all conflicting nodes and validation evidence into merge template.
+        Uses helper to ensure neighbor context is consistently presented.
         """
-        # Format nodes to merge
         nodes = [
             {
                 "id": node.id,
@@ -137,13 +118,9 @@ class IntegrationAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> IntegrationOutput:
         """
-        Parse LLM response
-
-        Args:
-            response: LLM response string
-
-        Returns:
-            IntegrationOutput instance
+        Extract merged node and rebuild summary from component fields.
+        Ensures output structure matches Structure Agent format for consistency.
+        Raises exception on failure to signal integration problems upstream.
         """
         try:
             data = self._parse_json_response(response)
@@ -151,7 +128,6 @@ class IntegrationAgent(BaseAgent):
             merged_node = data.get("merged_node", {}) or {}
             description = data.get("merge_description", "Node merge")
 
-            # Ensure merged node fields align with Structure Agent output
             context = merged_node.get("context", "General context").strip()
             keywords = merged_node.get("keywords") or []
             if not isinstance(keywords, list):

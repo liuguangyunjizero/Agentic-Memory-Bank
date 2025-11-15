@@ -1,9 +1,6 @@
 """
-Search Tool
-
-Searches for information on the web and returns structured search results (using Serper API).
-
-Reference: WebResummer's search tool implementation
+Web search tool using Serper API to query Google and return ranked results.
+Supports parallel execution of multiple queries for efficiency.
 """
 
 import logging
@@ -17,7 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class SearchTool:
-    """Search Tool: Search for information on the web"""
+    """
+    Executes web searches and structures results for agent consumption.
+    Handles retries and parallel query processing.
+    """
 
     name = "search"
     description = "Search for information on the web. Can search multiple queries at once."
@@ -36,11 +36,7 @@ class SearchTool:
 
     def __init__(self, search_api_key: str, max_results_per_query: int = 5):
         """
-        Initialize Search Tool
-
-        Args:
-            search_api_key: Search API key (Serper API)
-            max_results_per_query: Maximum number of results per query
+        Configure search tool with API credentials and result limits.
         """
         if not search_api_key or search_api_key == "your-serper-api-key-here":
             raise ValueError(
@@ -54,13 +50,8 @@ class SearchTool:
 
     def call(self, params: Dict[str, Any]) -> str:
         """
-        Execute search
-
-        Args:
-            params: {"query": [str, str, ...]} or {"query": str}
-
-        Returns:
-            str: JSON-formatted search results
+        Execute one or more search queries and aggregate results.
+        Returns JSON containing titles, URLs, and snippets from search results.
         """
         queries = params.get("query", [])
 
@@ -75,16 +66,12 @@ class SearchTool:
         logger.info(f"Executing search: {len(queries)} queries")
 
         try:
-            # Process multiple queries in parallel
             if len(queries) == 1:
-                # Single query: call directly (avoid thread pool overhead)
                 all_results = [self._serper_search_with_retry(queries[0])]
             else:
-                # Multiple queries: parallel processing (reference code style)
                 with ThreadPoolExecutor(max_workers=3) as executor:
                     all_results = list(executor.map(self._serper_search_with_retry, queries))
 
-            # Flatten all results
             flattened_results = [item for sublist in all_results for item in sublist]
 
             output = {
@@ -103,13 +90,8 @@ class SearchTool:
 
     def _serper_search_with_retry(self, query: str) -> List[Dict[str, str]]:
         """
-        Search with retry mechanism (reference code style)
-
-        Args:
-            query: Search query
-
-        Returns:
-            List of search results (returns empty list on failure)
+        Attempt search with exponential backoff on failure.
+        Returns empty list rather than raising exception to handle partial failures gracefully.
         """
         max_retries = 5
         for attempt in range(max_retries):
@@ -118,19 +100,13 @@ class SearchTool:
             except Exception as e:
                 if attempt == max_retries - 1:
                     logger.error(f"Search '{query}' failed after {max_retries} retries: {str(e)}")
-                    return []  # Return empty list instead of throwing exception
+                    return []
                 logger.warning(f"Search '{query}' attempt {attempt + 1}/{max_retries} failed, retrying...")
                 time.sleep(0.5)
 
     def _serper_search(self, query: str) -> List[Dict[str, str]]:
         """
-        Search using Serper API
-
-        Args:
-            query: Search query
-
-        Returns:
-            List of search results
+        Make single HTTP request to Serper API and parse organic search results.
         """
         try:
             response = requests.post(
@@ -143,12 +119,11 @@ class SearchTool:
                     "q": query,
                     "num": self.max_results_per_query
                 },
-                timeout=30  # Increased to 30 seconds
+                timeout=30
             )
             response.raise_for_status()
             data = response.json()
 
-            # Parse results
             results = []
             if "organic" in data:
                 for item in data["organic"][:self.max_results_per_query]:
@@ -171,5 +146,5 @@ class SearchTool:
             raise
 
     def __repr__(self) -> str:
-        """Return tool summary"""
+        """Identify tool and API backend."""
         return f"SearchTool(name={self.name}, api=Serper)"

@@ -1,10 +1,6 @@
 """
-Hybrid Retrieval Module
-
-Combines BM25 (keyword) and Embedding (semantic) hybrid retrieval:
-- Top-K retrieval
-- Neighbor expansion (one layer)
-- Time sorting
+Hybrid search combining keyword matching (BM25) with semantic similarity (embeddings).
+Retrieves relevant nodes from the graph and expands results with connected neighbors.
 """
 
 import numpy as np
@@ -17,66 +13,49 @@ logger = logging.getLogger(__name__)
 
 class RetrievalModule:
     """
-    Hybrid Retrieval Module (inspired by A-mem's HybridRetriever)
-
-    Retrieval strategy: BM25 (keyword) + Embedding (semantic)
+    Balances precision of keyword search with flexibility of semantic matching.
+    Maintains lazy-built indexes for efficiency and supports neighbor expansion.
     """
 
     def __init__(self, alpha: float = 0.5, k: int = 5):
         """
-        Initialize retrieval module
-
-        Args:
-            alpha: Hybrid retrieval weight (BM25 weight, embedding weight is 1-alpha)
-            k: k value for top-k retrieval
+        Configure the blend between keyword and semantic search.
+        Alpha controls the weight given to BM25 versus embedding similarity.
         """
         self.alpha = alpha
         self.k = k
         self.bm25: Optional[BM25Okapi] = None
-        self.corpus_keywords: List[List[str]] = []  # Preprocessed keyword list
-        self.node_ids: List[str] = []  # Node ID list (corresponds to corpus_keywords)
-        self._index_dirty: bool = True  # Optimization: index dirty flag (initially True, needs building)
+        self.corpus_keywords: List[List[str]] = []
+        self.node_ids: List[str] = []
+        self._index_dirty: bool = True
 
         logger.info(f"Retrieval module initialized: alpha={alpha}, k={k}")
 
     @classmethod
     def from_config(cls, config) -> "RetrievalModule":
-        """
-        Create retrieval module from Config object
-
-        Args:
-            config: Config instance
-
-        Returns:
-            RetrievalModule instance
-        """
+        """Extract retrieval parameters from system configuration."""
         return cls(alpha=config.RETRIEVAL_ALPHA, k=config.RETRIEVAL_K)
 
     def build_index(self, graph):
         """
-        Build retrieval index (call after adding nodes)
-
-        Args:
-            graph: QueryGraph object
+        Construct BM25 index from current graph state.
+        Should be called after nodes are added but deferred until first query for efficiency.
         """
         from src.storage.query_graph import QueryGraph
 
         if not isinstance(graph, QueryGraph):
             raise TypeError("graph must be a QueryGraph instance")
 
-        # Extract keywords from all nodes as BM25 corpus
         self.corpus_keywords = []
         self.node_ids = []
 
         for node in graph.nodes_dict.values():
-            # Filter empty keywords to avoid BM25 errors
             keywords = [kw for kw in node.keywords if kw]
             if not keywords:
-                keywords = ["placeholder"]  # Use placeholder if no keywords at all
+                keywords = ["placeholder"]
             self.corpus_keywords.append(keywords)
             self.node_ids.append(node.id)
 
-        # Build BM25 index
         if self.corpus_keywords:
             self.bm25 = BM25Okapi(self.corpus_keywords)
             logger.info(f"BM25 index built successfully, corpus size: {len(self.corpus_keywords)}")
@@ -84,13 +63,12 @@ class RetrievalModule:
             self.bm25 = None
             logger.warning("Corpus is empty, cannot build BM25 index")
 
-        # Optimization: reset dirty flag
         self._index_dirty = False
 
     def mark_index_dirty(self):
         """
-        Optimization: mark index as dirty (needs rebuilding)
-        Call after graph modification operations
+        Flag that the index is stale due to graph modifications.
+        Next retrieval will trigger automatic rebuild.
         """
         self._index_dirty = True
 
@@ -102,23 +80,15 @@ class RetrievalModule:
         exclude_ids: Optional[Set[str]] = None
     ) -> List:
         """
-        Hybrid retrieval: return top-k + one layer of neighbors, sorted by timestamp descending
-
-        Args:
-            query_embedding: Query embedding vector
-            query_keywords: Query keyword list
-            graph: QueryGraph object
-            exclude_ids: Node IDs to exclude (e.g., known neighbors)
-
-        Returns:
-            Retrieval results (candidate nodes + neighbor nodes, sorted by timestamp descending)
+        Find top-k nodes by combined score, expand with direct neighbors,
+        and return sorted by recency. Automatically rebuilds index if needed.
+        Exclude_ids allows filtering out known nodes to avoid duplication.
         """
         from src.storage.query_graph import QueryGraph
 
         if not isinstance(graph, QueryGraph):
             raise TypeError("graph must be a QueryGraph instance")
 
-        # Optimization: auto-rebuild index (if index is dirty)
         if self._index_dirty:
             self.build_index(graph)
 
@@ -127,11 +97,9 @@ class RetrievalModule:
         if not graph.nodes_dict:
             return []
 
-        # 1. Calculate hybrid scores for all nodes
         all_nodes = list(graph.nodes_dict.values())
         scored_nodes: List[Tuple[str, float]] = []
 
-        # Performance optimization: pre-compute BM25 scores (avoid O(n²) repeated calculation in loop -> O(n))
         bm25_scores_normalized = {}
         if self.bm25 and query_keywords:
             bm25_scores = self.bm25.get_scores(query_keywords)
@@ -143,21 +111,16 @@ class RetrievalModule:
             if node.id in exclude_ids:
                 continue
 
-            # BM25 score (from pre-computed results)
             bm25_score = bm25_scores_normalized.get(node.id, 0.0)
 
-            # Embedding similarity score
             semantic_score = float(np.dot(query_embedding, node.embedding))
 
-            # Hybrid score
             final_score = self.alpha * bm25_score + (1 - self.alpha) * semantic_score
             scored_nodes.append((node.id, final_score))
 
-        # 2. Filter top-k candidate nodes
         scored_nodes.sort(key=lambda x: x[1], reverse=True)
         top_k_ids = [node_id for node_id, _ in scored_nodes[:self.k]]
 
-        # 3. Expand one layer of neighbors
         result_ids = set(top_k_ids)
         for node_id in top_k_ids:
             neighbors = graph.get_neighbors(node_id)
@@ -165,12 +128,11 @@ class RetrievalModule:
                 if neighbor.id not in exclude_ids:
                     result_ids.add(neighbor.id)
 
-        # 4. Get complete node info and sort by timestamp descending
         result_nodes = [graph.nodes_dict[nid] for nid in result_ids if nid in graph.nodes_dict]
         result_nodes.sort(key=lambda n: n.timestamp, reverse=True)
 
         return result_nodes
 
     def __repr__(self) -> str:
-        """Return module summary"""
+        """Show configuration and index status."""
         return f"RetrievalModule(alpha={self.alpha}, k={self.k}, indexed={self.bm25 is not None})"

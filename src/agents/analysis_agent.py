@@ -1,7 +1,6 @@
 """
-Memory Analysis Agent
-
-Responsibility: Determine relationship between new node and existing nodes (conflict/related/unrelated)
+Relationship detection agent that compares new nodes against existing memories.
+Identifies conflicts, semantic connections, and irrelevant pairs for graph construction.
 """
 
 import logging
@@ -15,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NodeInfo:
-    """Node information (without embedding)"""
-    id: Optional[str] = None  # New node has no id
+    """Lightweight node representation for comparison without embedding data."""
+    id: Optional[str] = None
     summary: str = ""
     context: str = ""
     keywords: List[str] = None
@@ -29,43 +28,37 @@ class NodeInfo:
 
 @dataclass
 class Relationship:
-    """Node relationship"""
+    """Detected relationship between new node and existing memory."""
     existing_node_id: str
-    relationship: str  # "conflict" | "related" | "unrelated"
-    reasoning: str  # Reasoning for determination
+    relationship: str
+    reasoning: str
 
-    # conflict-specific field
     conflict_description: Optional[str] = None
 
 
 @dataclass
 class AnalysisInput:
-    """Analysis Agent input"""
-    new_node: NodeInfo  # New node
-    candidate_nodes: List[NodeInfo]  # Candidate nodes
+    """Comparison request containing one new node and candidate matches."""
+    new_node: NodeInfo
+    candidate_nodes: List[NodeInfo]
 
 
 @dataclass
 class AnalysisOutput:
-    """Analysis Agent output"""
+    """Relationship determinations for all candidates."""
     relationships: List[Relationship]
 
 
 class AnalysisAgent(BaseAgent):
     """
-    Memory Analysis Agent
-
-    Determination priority: conflict > related > unrelated
+    Detects semantic relationships between nodes to guide edge creation.
+    Prioritizes conflict detection to trigger validation workflows.
     """
 
     def __init__(self, llm_client, temperature: float = 0.4, top_p: float = 0.9):
         """
-        Initialize Analysis Agent
-
-        Args:
-            llm_client: LLMClient instance
-            temperature: Temperature parameter
-            top_p: Sampling parameter
+        Configure reasoning parameters for relationship analysis.
+        Moderate temperature balances consistency with nuanced judgments.
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -74,7 +67,7 @@ class AnalysisAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "AnalysisAgent":
-        """Create Agent from config"""
+        """Build agent from centralized configuration object."""
         return cls(
             llm_client=llm_client,
             temperature=config.ANALYSIS_AGENT_TEMPERATURE,
@@ -83,13 +76,8 @@ class AnalysisAgent(BaseAgent):
 
     def run(self, input_data: AnalysisInput) -> AnalysisOutput:
         """
-        Analyze node relationships
-
-        Args:
-            input_data: AnalysisInput instance
-
-        Returns:
-            AnalysisOutput instance
+        Determine relationship type for each candidate node.
+        Returns empty list when no candidates provided to avoid unnecessary LLM calls.
         """
         if not input_data.candidate_nodes:
             logger.warning("Candidate node list is empty, returning empty relationships")
@@ -97,7 +85,6 @@ class AnalysisAgent(BaseAgent):
 
         prompt = self._build_prompt(input_data)
 
-        # Log LLM input
         logger.debug("="*80)
         logger.debug("Analysis Agent LLM Input:")
         logger.debug(prompt)
@@ -105,7 +92,6 @@ class AnalysisAgent(BaseAgent):
 
         response = self.llm_client.call(prompt, temperature=self.temperature, top_p=self.top_p, stop=None)
 
-        # Log LLM raw response
         logger.debug("="*80)
         logger.debug("Analysis Agent LLM Raw Response:")
         logger.debug(response)
@@ -115,15 +101,9 @@ class AnalysisAgent(BaseAgent):
 
     def _build_prompt(self, input_data: AnalysisInput) -> str:
         """
-        Build prompt
-
-        Args:
-            input_data: AnalysisInput instance
-
-        Returns:
-            Complete prompt
+        Format new node and candidates into comparison template.
+        Uses helper function to ensure consistent candidate presentation.
         """
-        # Format candidate nodes
         candidates = [
             {
                 "id": node.id,
@@ -145,18 +125,13 @@ class AnalysisAgent(BaseAgent):
 
     def _parse_response(self, response: str) -> AnalysisOutput:
         """
-        Parse LLM response
-
-        Args:
-            response: LLM response string
-
-        Returns:
-            AnalysisOutput instance
+        Extract relationship determinations from JSON array response.
+        Handles both array and single-object responses for robustness.
+        Returns empty relationships on failure to avoid blocking pipeline.
         """
         try:
             data = self._parse_json_response(response)
 
-            # If single object returned, convert to list
             if isinstance(data, dict):
                 data = [data]
 
@@ -180,5 +155,4 @@ class AnalysisAgent(BaseAgent):
 
         except Exception as e:
             logger.error(f"Failed to parse analysis response: {str(e)}")
-            # Return default unrelated relationship
             return AnalysisOutput(relationships=[])

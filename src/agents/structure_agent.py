@@ -1,7 +1,6 @@
 """
-Structure Agent
-
-Responsibility: Structured compression of content for a single topic
+Compression agent that transforms raw chunks into structured node records.
+Extracts key information, evidence, and reasoning patterns for graph storage.
 """
 
 import logging
@@ -15,14 +14,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StructureInput:
-    """Structure Agent input"""
-    content: str  # Original content chunk (verbatim)
+    """Raw content chunk ready for structured extraction."""
+    content: str
 
 
 @dataclass
 class StructureOutput:
-    """Structure Agent output"""
-    summary: str  # Structured detailed summary
+    """Structured node containing extracted semantic components."""
+    summary: str
     context: str
     keywords: List[str]
     core_information: str
@@ -33,19 +32,14 @@ class StructureOutput:
 
 class StructureAgent(BaseAgent):
     """
-    Structure Agent
-
-    Compresses original content into structured summary
+    Transforms verbatim chunks into queryable graph nodes.
+    Uses very low temperature to ensure faithful extraction without invention.
     """
 
     def __init__(self, llm_client, temperature: float = 0.1, top_p: float = 0.8):
         """
-        Initialize Structure Agent
-
-        Args:
-            llm_client: LLMClient instance
-            temperature: Temperature parameter (default 0.1, for precise data preservation)
-            top_p: Sampling parameter (default 0.8, for precise data preservation)
+        Configure extraction parameters for maximum precision.
+        Low temperature minimizes hallucination risk when copying answer blocks.
         """
         super().__init__(llm_client)
         self.temperature = temperature
@@ -54,7 +48,7 @@ class StructureAgent(BaseAgent):
 
     @classmethod
     def from_config(cls, llm_client, config) -> "StructureAgent":
-        """Create Agent from config"""
+        """Build agent from centralized configuration object."""
         return cls(
             llm_client=llm_client,
             temperature=config.STRUCTURE_AGENT_TEMPERATURE,
@@ -63,35 +57,20 @@ class StructureAgent(BaseAgent):
 
     def run(self, input_data: StructureInput) -> StructureOutput:
         """
-        Generate structured summary
-
-        Args:
-            input_data: StructureInput instance
-
-        Returns:
-            StructureOutput instance
+        Execute structured extraction on a single chunk.
+        Returns populated node ready for graph insertion.
         """
         prompt = self._build_prompt(input_data)
 
-        # Use configured temperature and top_p to reduce hallucination
-        # Ensure <answer> tag content is accurately copied
         response = self._call_llm_with_params(prompt, temperature=self.temperature, top_p=self.top_p)
 
         return self._parse_response(response)
 
     def _call_llm_with_params(self, prompt: str, temperature: float, top_p: float) -> str:
         """
-        Call LLM with specified parameters
-
-        Args:
-            prompt: Input prompt
-            temperature: Temperature parameter
-            top_p: Sampling parameter
-
-        Returns:
-            LLM response
+        Send extraction request with detailed logging for debugging.
+        Logs both input prompt and raw response to trace extraction issues.
         """
-        # Log LLM input
         logger.debug("="*80)
         logger.debug("Structure Agent LLM Input:")
         logger.debug(prompt)
@@ -100,7 +79,6 @@ class StructureAgent(BaseAgent):
         try:
             response = self.llm_client.call(prompt, temperature=temperature, top_p=top_p, stop=None)
 
-            # Log LLM raw response
             logger.debug("="*80)
             logger.debug("Structure Agent LLM Raw Response:")
             logger.debug(response)
@@ -112,26 +90,14 @@ class StructureAgent(BaseAgent):
             raise
 
     def _build_prompt(self, input_data: StructureInput) -> str:
-        """
-        Build prompt
-
-        Args:
-            input_data: StructureInput instance
-
-        Returns:
-            Complete prompt
-        """
+        """Inject chunk content into the extraction template."""
         return STRUCTURE_PROMPT.format(content=input_data.content)
 
     def _parse_response(self, response: str) -> StructureOutput:
         """
-        Parse LLM response
-
-        Args:
-            response: LLM response string
-
-        Returns:
-            StructureOutput instance
+        Extract and validate structured fields from JSON response.
+        Falls back to using raw response as summary if parsing fails.
+        Ensures all required fields have default values to prevent downstream errors.
         """
         try:
             data = self._parse_json_response(response)
@@ -173,7 +139,6 @@ class StructureAgent(BaseAgent):
 
         except Exception as e:
             logger.error(f"Failed to parse structure response: {str(e)}")
-            # Return raw response as summary
             return StructureOutput(
                 summary=response,
                 context="General context",
